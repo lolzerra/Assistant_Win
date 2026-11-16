@@ -107,6 +107,13 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor if mode == "rectangle" else Qt.PointingHandCursor)
+        self.setAttribute(Qt.WA_Hover)  # redessine à l'entrée et à la sortie de la souris (mode écran)
+
+    def enterEvent(self, e):
+        self.update()
+
+    def leaveEvent(self, e):
+        self.update()
         self.setGeometry(shot.geo)
 
     # Rectangle libre
@@ -117,6 +124,10 @@ class Overlay(QWidget):
         if self.mode == "rectangle":
             self.origin = e.position().toPoint()
             self.sel = QRect(self.origin, self.origin)
+        elif self.mode == "ecran":
+            pm = self.shot.pixmap.copy()
+            pm.setDevicePixelRatio(1)
+            self.picked.emit(pm)
         elif self.hover:
             pm = self.shot.crop_native(self.hover[0])
             if not pm.isNull():
@@ -127,7 +138,7 @@ class Overlay(QWidget):
         if self.mode == "rectangle":
             if self.origin is not None:
                 self.sel = QRect(self.origin, p).normalized()
-        else:
+        elif self.mode == "fenetre":
             native = self.shot.to_native(p)
             self.hover = next(((r, t) for r, t in self.windows if r.contains(native)), None)
         self.update()
@@ -154,17 +165,24 @@ class Overlay(QWidget):
         if self.mode == "rectangle" and not self.sel.isNull():
             target = self.sel
             label = f"{round(self.sel.width() * self.shot.dpr)} × {round(self.sel.height() * self.shot.dpr)}"
+        elif self.mode == "ecran" and self.underMouse():
+            target = self.rect()
+            label = f"{self.shot.screen.name()} — {self.shot.pixmap.width()} × {self.shot.pixmap.height()}"
         elif self.mode == "fenetre" and self.hover:
             target = self.shot.native_to_local(self.hover[0]).intersected(self.rect())
             label = self.hover[1]
-        if not target.isNull():
+        if self.mode == "ecran" and not target.isNull():
+            p.drawPixmap(0, 0, self.shot.pixmap)
+            p.setPen(QPen(QColor("#4f7cff"), 6))
+            p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+        elif not target.isNull():
             src = QRect(round(target.x() * self.shot.dpr), round(target.y() * self.shot.dpr),
                         round(target.width() * self.shot.dpr), round(target.height() * self.shot.dpr))
             p.drawPixmap(target, self.shot.pixmap, src)
             p.setPen(QPen(QColor("#4f7cff"), 2))
             p.drawRect(target.adjusted(0, 0, -1, -1))
-        hint = ("Glissez pour sélectionner une zone" if self.mode == "rectangle"
-                else "Cliquez sur une fenêtre") + " · Échap ou clic droit pour annuler"
+        hint = {"rectangle": "Glissez pour sélectionner une zone", "fenetre": "Cliquez sur une fenêtre",
+                "ecran": "Cliquez sur l'écran à capturer"}[self.mode] + " · Échap ou clic droit pour annuler"
         if label:
             hint = f"{label}   —   {hint}"
         f = p.font()
@@ -194,9 +212,8 @@ class Capture(QObject):
 
     def _grab(self, mode: str):
         screens = QGuiApplication.screens()
-        if mode == "ecran":
-            screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-            pm = Shot(screen).pixmap
+        if mode == "ecran" and len(screens) == 1:  # un seul écran : pas besoin de choisir
+            pm = Shot(screens[0]).pixmap
             pm.setDevicePixelRatio(1)
             self.done.emit(pm)
             return
