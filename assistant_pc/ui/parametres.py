@@ -1,7 +1,7 @@
 """Paramètres : serveur, empreinte du certificat, test de connexion, fenêtre, consignes perso, déconnexion."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout)
+                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout)
 
 from ..api import Api, ApiError
 from ..config import VERSION, DEFAULT_FINGERPRINT, DEFAULT_URL, normalize_fingerprint, set_start_with_windows
@@ -68,6 +68,28 @@ class SettingsDialog(QDialog):
         mic_box = QGroupBox("Dictée")
         ml = QFormLayout(mic_box)
         ml.addRow("Micro", self.mic)
+        self.mic_level = QProgressBar()
+        self.mic_level.setRange(0, 100)
+        self.mic_level.setTextVisible(False)
+        self.mic_level.setFixedHeight(6)
+        self.mic_level.setStyleSheet("QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                                     "QProgressBar::chunk { background: #2ecc71; border-radius: 3px; }")
+        self.mic_note = QLabel("Parlez : la barre doit bouger si le micro choisi capte le son (rien n'est envoyé).")
+        self.mic_note.setWordWrap(True)
+        self.mic_note.setStyleSheet("color: gray;")
+        ml.addRow("", self.mic_level)
+        ml.addRow("", self.mic_note)
+        self.monitor = None
+        try:
+            from ..dictee import MicMonitor
+            self.monitor = MicMonitor()
+            self.monitor.level.connect(self.mic_level.setValue)
+            self.monitor.failed.connect(lambda m: (self.mic_note.setText("⚠ " + m),
+                                                   self.mic_note.setStyleSheet("color: #c0392b;")))
+            self.mic.currentIndexChanged.connect(self._monitor_mic)
+            self._monitor_mic()
+        except Exception:
+            pass
 
         win = QGroupBox("Fenêtre")
         wl = QVBoxLayout(win)
@@ -115,6 +137,22 @@ class SettingsDialog(QDialog):
 
         self.url.textChanged.connect(self._url_changed)
         self._url_changed()
+
+    def _monitor_mic(self):
+        if self.monitor is None:
+            return
+        self.mic_note.setText("Parlez : la barre doit bouger si le micro choisi capte le son (rien n'est envoyé).")
+        self.mic_note.setStyleSheet("color: gray;")
+        name = self.mic.currentData()
+        if name is None:
+            self.monitor.stop()
+        else:
+            self.monitor.start(name)
+
+    def done(self, result):
+        if self.monitor is not None:
+            self.monitor.stop()
+        super().done(result)
 
     @staticmethod
     def _mono():

@@ -5,12 +5,13 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QPalette
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
-                               QPlainTextEdit, QProgressBar, QScrollArea, QToolButton, QVBoxLayout,
+                               QPlainTextEdit, QScrollArea, QToolButton, QVBoxLayout,
                                QWidget)
 
 from ..dictee import Dictation, join_text
 from ..api import MAX_ATTACHMENTS, MAX_FILE_BYTES, Api, AuthError
 from . import travail
+from .onde import Waveform
 from .messages import AnswerBubble, UserBubble, bubble_style
 
 THINK_LEVELS = [("Réflexion : auto", None), ("Sans réflexion", 0), ("Réflexion légère", 1),
@@ -120,6 +121,27 @@ class PromptEdit(QPlainTextEdit):
     """Entrée envoie, Maj+Entrée va à la ligne ; coller des fichiers depuis l'Explorateur les joint."""
     submitted = Signal()
     files_pasted = Signal(list)
+    WAVE_H = 18
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.wave = Waveform(self)
+        self.wave.hide()
+
+    def show_wave(self, on: bool):
+        """Pendant la dictée : l'onde occupe le haut de la zone, le texte s'écrit dessous."""
+        self.wave.clear()
+        self.setViewportMargins(0, self.WAVE_H + 4 if on else 0, 0, 0)
+        self.wave.setVisible(on)
+        self._place_wave()
+
+    def _place_wave(self):
+        fw = self.frameWidth()
+        self.wave.setGeometry(fw + 6, fw + 3, self.width() - 2 * fw - 12, self.WAVE_H)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_wave()
 
     def keyPressEvent(self, e: QKeyEvent):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not e.modifiers() & Qt.ShiftModifier:
@@ -278,14 +300,7 @@ class MainWindow(QWidget):
         self.dictation.failed.connect(self._dictation_failed)
         self.dictation.running.connect(self._dictation_running)
         self.dictation.finished.connect(self._dictation_finished)
-        self.level = QProgressBar()
-        self.level.setRange(0, 100)
-        self.level.setTextVisible(False)
-        self.level.setFixedHeight(4)
-        self.level.setStyleSheet("QProgressBar { border: none; background: palette(mid); border-radius: 2px; }"
-                                 "QProgressBar::chunk { background: #2ecc71; border-radius: 2px; }")
-        self.level.hide()
-        self.dictation.level.connect(self.level.setValue)
+        self.dictation.level.connect(lambda lv: self.prompt.wave.push(lv))
         tools = QVBoxLayout()
         tools.setSpacing(4)
         tools.addWidget(attach)
@@ -320,7 +335,6 @@ class MainWindow(QWidget):
         lay.addWidget(self.status)
         lay.addWidget(self.chip_row)
         lay.addLayout(bottom)
-        lay.addWidget(self.level)
 
         self.setStyleSheet(bubble_style(self) + " QFrame#chip { border: 1px solid palette(mid); border-radius: 10px; }")
         self.apply_on_top()
@@ -497,7 +511,7 @@ class MainWindow(QWidget):
         self.mic.setStyleSheet("QToolButton { background: #c0392b; border: none; border-radius: 6px; }" if on else "")
         self.prompt.setPlaceholderText("🎤 Je vous écoute… (cliquez de nouveau sur le micro pour arrêter)" if on else
                                        "Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
-        self.level.setVisible(on)
+        self.prompt.show_wave(on)
         if not on and not self.dictation.working:
             self.prompt.setReadOnly(False)
 

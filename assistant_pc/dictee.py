@@ -66,6 +66,52 @@ def rms(block: bytes) -> float:
     return math.sqrt(sum(x * x for x in samples) / max(1, len(samples)))
 
 
+def level_of(value: float) -> int:
+    """Niveau RMS → 0-100 sur une échelle en décibels (-60 dB → 0, 0 dB → 100)."""
+    db = 20 * math.log10(max(value, 1) / 32768)
+    return max(0, min(100, int((db + 60) * 100 / 60)))
+
+
+class MicMonitor(QObject):
+    """Écoute un micro sans rien envoyer, pour afficher son niveau (paramètres)."""
+    level = Signal(int)
+    failed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._stream = None
+
+    def start(self, name: str):
+        self.stop()
+        try:
+            import sounddevice as sd
+            device = _device_index(sd, name)
+            if device is False:
+                self.failed.emit("Micro introuvable (débranché ?)")
+                return
+            emit = self.level.emit
+
+            def callback(indata, frames, time_info, status):
+                emit(level_of(rms(bytes(indata))))
+
+            self._stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", device=device,
+                                             blocksize=800, callback=callback)
+            self._stream.start()
+        except Exception as e:
+            self._stream = None
+            self.failed.emit(f"Micro inaccessible : {e}")
+
+    def stop(self):
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+            self.level.emit(0)
+
+
 def to_wav(pcm: bytes) -> bytes:
     """WAV 16 kHz mono ; un micro faible est amplifié (jusqu'à ×8) pour Whisper."""
     samples = array("h", pcm)
@@ -205,9 +251,8 @@ class Dictation(QObject):
                 break
             lv = rms(block)
             n += 1
-            if n % 5 == 0:  # ~10 fois par seconde : -60 dB → 0, 0 dB → 100
-                db = 20 * math.log10(max(lv, 1) / 32768)
-                self.level.emit(max(0, min(100, int((db + 60) * 100 / 60))))
+            if n % 2 == 0:  # 25 fois par seconde, pour l'onde
+                self.level.emit(level_of(lv))
             if noise is None:  # 0,2 s pour mesurer le bruit de fond
                 calib.append(lv)
                 preroll.append(block)
