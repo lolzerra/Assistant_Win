@@ -2,10 +2,10 @@
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QKeyEvent, QPalette
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
-                               QPlainTextEdit, QPushButton, QScrollArea, QToolButton, QVBoxLayout,
+                               QPlainTextEdit, QScrollArea, QToolButton, QVBoxLayout,
                                QWidget)
 
 from ..dictee import Dictation
@@ -263,15 +263,16 @@ class MainWindow(QWidget):
         self.chip_row = FlowRow()
         self.chip_row.hide()
         attach = QToolButton()
-        attach.setText("📎")
+        self._icon_button(attach, "trombone")
         attach.setToolTip("Joindre des fichiers")
         attach.clicked.connect(self._pick_files)
         self.mic = QToolButton()
-        self.mic.setText("🎤")
+        self._icon_button(self.mic, "micro")
         self.mic.setCheckable(True)
         self.mic.setToolTip("Dicter (cliquez pour arrêter)")
         self.mic.toggled.connect(self._mic_toggled)
-        self.dictation = Dictation(lambda: self.api, lambda: self.prompt.toPlainText())
+        self.dictation = Dictation(lambda: self.api, lambda: self.prompt.toPlainText(),
+                                   lambda: self.config["microphone"])
         self.dictation.text.connect(self._dictated)
         self.dictation.failed.connect(self._dictation_failed)
         self.dictation.running.connect(self._dictation_running)
@@ -281,13 +282,15 @@ class MainWindow(QWidget):
         tools.addWidget(attach)
         tools.addWidget(self.mic)
         tools.addStretch()
+        tools.setContentsMargins(0, 0, 0, 0)
         self.prompt = PromptEdit()
         self.prompt.setPlaceholderText("Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
         self.prompt.setFixedHeight(76)
         self.prompt.submitted.connect(self.send)
         self.prompt.files_pasted.connect(self.add_files)
-        self.send_btn = QPushButton("Envoyer")
-        self.send_btn.setDefault(True)
+        self.send_btn = QToolButton()
+        self._icon_button(self.send_btn, "envoyer", accent=True)
+        self.send_btn.setToolTip("Envoyer (Entrée)")
         self.send_btn.clicked.connect(self._send_or_stop)
         bottom = QHBoxLayout()
         bottom.addLayout(tools)
@@ -433,8 +436,33 @@ class MainWindow(QWidget):
     def _update_send(self):
         busy = self.worker is not None
         uploading = any(c.pending for c in self.chips)
-        self.send_btn.setText("Stop" if busy else ("Envoi…" if uploading else "Envoyer"))
+        self.send_btn.setIcon(self._glyph("stop" if busy else "envoyer", "white"))
+        self.send_btn.setToolTip("Arrêter la réponse" if busy else
+                                 ("Fichiers en cours d'envoi…" if uploading else "Envoyer (Entrée)"))
+        self.send_btn.setStyleSheet(self._accent_style("#c0392b" if busy else None))
         self.send_btn.setEnabled(busy or not uploading)
+
+    # ---------- Boutons à pictogramme ----------
+
+    BUTTON = 34
+
+    def _glyph(self, name: str, color: str | None = None):
+        from .icone import glyph
+        return glyph(name, color or self.palette().color(QPalette.ButtonText).name())
+
+    def _icon_button(self, btn: QToolButton, name: str, accent=False):
+        btn.setFixedSize(self.BUTTON, self.BUTTON)
+        btn.setIconSize(QSize(20, 20))
+        btn.setIcon(self._glyph(name, "white" if accent else None))
+        btn.setCursor(Qt.PointingHandCursor)
+        if accent:
+            btn.setStyleSheet(self._accent_style())
+
+    def _accent_style(self, color: str | None = None) -> str:
+        c = color or "#4f7cff"
+        return (f"QToolButton {{ background: {c}; border: none; border-radius: 6px; }}"
+                f"QToolButton:hover {{ background: {c}dd; }}"
+                "QToolButton:disabled { background: #7a7d82; }")
 
     # ---------- Dictée ----------
 
@@ -449,7 +477,8 @@ class MainWindow(QWidget):
         self.mic.blockSignals(True)
         self.mic.setChecked(on)
         self.mic.blockSignals(False)
-        self.mic.setStyleSheet("QToolButton { background: #c0392b; border-radius: 4px; }" if on else "")
+        self.mic.setIcon(self._glyph("micro", "white" if on else None))
+        self.mic.setStyleSheet("QToolButton { background: #c0392b; border: none; border-radius: 6px; }" if on else "")
         self.prompt.setPlaceholderText("🎤 Je vous écoute… (cliquez de nouveau sur le micro pour arrêter)" if on else
                                        "Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
 

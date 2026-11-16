@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "AssistantPC"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 DEFAULT_URL = "https://192.168.1.41:8443"
 DEFAULT_FINGERPRINT = "18:28:CD:69:F6:71:DA:A7:5E:9A:39:B9:F1:65:C1:9F:3E:84:72:EF:52:02:CA:69:83:75:4E:6C:D8:C9:1B:32"
@@ -25,6 +25,7 @@ DEFAULTS = {
     "edge_y": 0.4,
     "always_on_top": False,
     "start_with_windows": False,
+    "microphone": "",  # nom du micro ; vide = micro par défaut de Windows
     "auto_update": True,  # vérifie les Releases GitHub au démarrage
     "geometry": None,
 }

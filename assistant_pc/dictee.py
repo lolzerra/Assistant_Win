@@ -14,6 +14,42 @@ PAUSE_BLOCKS = 40           # 0,8 s de silence termine un segment
 MAX_BLOCKS = 25 * 50        # 25 s au plus par segment (le serveur accepte ~2 min)
 MIN_SPEECH_BLOCKS = 8       # moins de 160 ms de voix : bruit, ignoré
 PREROLL_BLOCKS = 15         # 0,3 s gardées avant le début de la voix
+_recording = 0              # ne pas relire la liste des micros pendant un enregistrement
+
+
+def _host_api(sd) -> int:
+    """API audio du micro par défaut (MME sous Windows) : accepte le 16 kHz et liste chaque micro une seule fois."""
+    try:
+        return sd.query_devices(kind="input")["hostapi"]
+    except Exception:
+        return 0
+
+
+def microphones(refresh=True) -> list[str]:
+    """Noms des micros disponibles. refresh relit la liste (micro branché depuis le lancement)."""
+    import sounddevice as sd
+    if refresh and not _recording:
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception:
+            pass
+    api = _host_api(sd)
+    names = []
+    for d in sd.query_devices():
+        if d["max_input_channels"] > 0 and d["hostapi"] == api and d["name"] not in names:
+            names.append(d["name"])
+    return names
+
+
+def _device_index(sd, name: str):
+    if not name:
+        return None
+    api = _host_api(sd)
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0 and d["hostapi"] == api and d["name"] == name:
+            return i
+    return False  # micro choisi introuvable
 
 
 def level(block: bytes) -> float:
@@ -37,8 +73,9 @@ class Dictation(QObject):
     running = Signal(bool)
     busy = Signal(bool)         # une transcription est en cours
 
-    def __init__(self, api_getter, context_getter):
+    def __init__(self, api_getter, context_getter, device_getter=lambda: ""):
         super().__init__()
+        self._device = device_getter
         self._api = api_getter
         self._context = context_getter  # texte déjà présent, pour guider la ponctuation
         self._stream = None
@@ -61,8 +98,20 @@ class Dictation(QObject):
         def callback(indata, frames, time_info, status):
             q.put(bytes(indata))
 
+        wanted = self._device()
+        device = _device_index(sd, wanted)
+        if device is False:
+            try:
+                microphones()  # le micro vient peut-être d'être branché
+            except Exception:
+                pass
+            device = _device_index(sd, wanted)
+        if device is False:
+            self.failed.emit(f"Micro « {wanted} » introuvable : micro par défaut utilisé "
+                             "(changez-le dans les paramètres).")
+            device = None
         try:
-            self._stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16",
+            self._stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", device=device,
                                              blocksize=BLOCK, callback=callback)
             self._stream.start()
         except Exception as e:
@@ -71,6 +120,8 @@ class Dictation(QObject):
                              "Windows autorise les applications de bureau à l'utiliser "
                              f"(Paramètres → Confidentialité → Microphone).\n{e}")
             return
+        global _recording
+        _recording += 1
         self.active = True
         self.running.emit(True)
         threading.Thread(target=self._process, args=(q, self._cancel, self._context()), daemon=True).start()
@@ -79,6 +130,8 @@ class Dictation(QObject):
         """flush : le dernier segment est encore transcrit ; sinon il est abandonné."""
         if not self.active:
             return
+        global _recording
+        _recording = max(0, _recording - 1)
         self.active = False
         if not flush:
             self._cancel.set()

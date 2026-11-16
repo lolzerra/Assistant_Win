@@ -1,6 +1,6 @@
 """Paramètres : serveur, empreinte du certificat, test de connexion, fenêtre, consignes perso, déconnexion."""
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout)
 
 from ..api import Api, ApiError
@@ -54,6 +54,21 @@ class SettingsDialog(QDialog):
         self.on_top.setChecked(config["always_on_top"])
         self.startup = QCheckBox("Lancer avec Windows (dans la zone de notification)")
         self.startup.setChecked(config["start_with_windows"])
+        self.mic = QComboBox()
+        self.mic.addItem("Micro par défaut de Windows", "")
+        try:
+            from ..dictee import microphones
+            for name in microphones():
+                self.mic.addItem(name, name)
+        except Exception as e:
+            self.mic.addItem(f"(liste indisponible : {e})", None)
+        if config["microphone"] and self.mic.findData(config["microphone"]) < 0:
+            self.mic.addItem(f"{config['microphone']} (débranché)", config["microphone"])
+        self.mic.setCurrentIndex(max(0, self.mic.findData(config["microphone"])))
+        mic_box = QGroupBox("Dictée")
+        ml = QFormLayout(mic_box)
+        ml.addRow("Micro", self.mic)
+
         win = QGroupBox("Fenêtre")
         wl = QVBoxLayout(win)
         wl.addWidget(self.on_top)
@@ -94,7 +109,7 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         lay = QVBoxLayout(self)
-        for w in (server, win, upd, ins, account):
+        for w in (server, mic_box, win, upd, ins, account):
             lay.addWidget(w)
         lay.addWidget(buttons)
 
@@ -162,6 +177,7 @@ class SettingsDialog(QDialog):
                 self.config["start_with_windows"] = self.startup.isChecked()
         self.config.update(server_url=url, fingerprint=fp, always_on_top=self.on_top.isChecked(),
                            auto_update=self.auto_update.isChecked(),
+                           microphone=self.mic.currentData() if self.mic.currentData() is not None else "",
                            instructions=self.instructions.toPlainText().strip()[:4000])
         self.config.save()
         self.accept()

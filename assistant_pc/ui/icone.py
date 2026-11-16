@@ -30,3 +30,31 @@ def icon() -> QIcon:
     for s in (16, 20, 24, 32, 48, 64, 128, 256):
         ic.addPixmap(pixmap(s))
     return ic
+
+
+# ---------- Pictogrammes des boutons (tracés SVG, couleur au choix) ----------
+
+_SVG = {
+    "trombone": '<path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
+    "micro": '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/>'
+             '<line x1="12" y1="18" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/>',
+    "envoyer": '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="2" fill="{c}"/>',
+}
+
+
+def glyph(name: str, color: str, size: int = 64) -> QIcon:
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtSvg import QSvgRenderer
+
+    body = _SVG[name].replace("{c}", color)
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
+           f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{body}</svg>')
+    renderer = QSvgRenderer(QByteArray(svg.encode()))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    renderer.render(p)
+    p.end()
+    return QIcon(pm)
