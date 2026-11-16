@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDia
                                QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
 from ..api import MAX_FILE_BYTES, Api, AuthError
+from ..raccourci import ElevatedRelay, is_admin
 from . import travail
 from .capture import grab_screen, grab_window, list_windows
 from .fenetre import StreamWorker
@@ -87,6 +88,14 @@ class CoachSetup(QDialog):
         self.model_note.setVisible(bool(self.model_note.text()))
         self.key = QKeySequenceEdit(QKeySequence(config["coach_hotkey"]))
         self.key.setMaximumSequenceLength(1)
+        self.admin = QCheckBox("Le jeu tourne en administrateur (League of Legends, Valorant…) :\n"
+                               "capter le raccourci avec les droits administrateur (confirmation Windows)")
+        self.admin.setChecked(bool(config["coach_admin"]))
+        self.game.textChanged.connect(self._guess_admin)
+        if is_admin():
+            self.admin.setChecked(False)
+            self.admin.setEnabled(False)
+            self.admin.setText("L'appli tourne déjà en administrateur : le raccourci marche dans tous les jeux")
 
         src = QHBoxLayout()
         src.addWidget(self.by_screen)
@@ -105,6 +114,7 @@ class CoachSetup(QDialog):
         form.addRow("Modèle", self.model)
         form.addRow("", self.model_note)
         form.addRow("Raccourci de capture", self.key)
+        form.addRow("", self.admin)
 
         buttons = QDialogButtonBox()
         self.start = buttons.addButton("Démarrer le coaching", QDialogButtonBox.AcceptRole)
@@ -125,6 +135,10 @@ class CoachSetup(QDialog):
         self.timer.timeout.connect(self._refresh_preview)
         self.timer.start(500)
         self._refresh_preview()
+
+    def _guess_admin(self, text: str):
+        if self.admin.isEnabled() and any(k in text.lower() for k in ("league", "lol", "valorant")):
+            self.admin.setChecked(True)
 
     def _fill_targets(self, *_):
         self.target.blockSignals(True)
@@ -175,6 +189,7 @@ class CoachSetup(QDialog):
         kind = self.target.currentData()[0]
         self.config.update(coach_pseudo=pseudo, coach_game=self.game.text().strip(), coach_hotkey=seq,
                            coach_source=kind, coach_model=self.model.currentData() or "",
+                           coach_admin=self.admin.isChecked(),
                            coach_target=(self.target.currentData()[1] if kind == "screen"
                                          else self.target.currentText()))
         self.config.save()
@@ -184,7 +199,8 @@ class CoachSetup(QDialog):
     def result_settings(self) -> dict:
         return {"target": self.target.currentData(), "title": self.target.currentText(),
                 "pseudo": self.config["coach_pseudo"], "game": self.config["coach_game"],
-                "model": self.config["coach_model"], "hotkey": self.config["coach_hotkey"]}
+                "model": self.config["coach_model"], "hotkey": self.config["coach_hotkey"],
+                "admin": self.config["coach_admin"]}
 
     def done(self, r):
         self.timer.stop()
@@ -245,12 +261,20 @@ class CoachWindow(QWidget):
         now.clicked.connect(self.trigger)
         self.on_top = QCheckBox("Toujours au premier plan")
         self.on_top.toggled.connect(self._set_on_top)
+        self.admin_btn = QPushButton("🛡 Mode administrateur")
+        self.admin_btn.setToolTip("Si le raccourci ne marche pas en jeu (jeu lancé en administrateur, comme LoL) : "
+                                  "le raccourci sera capté avec les droits administrateur")
+        self.admin_btn.clicked.connect(self._start_relay)
+        self.admin_btn.setVisible(not is_admin())
+        self.relay: ElevatedRelay | None = None
+        self.closing = False
         stop = QPushButton("Terminer")
         stop.clicked.connect(self.close)
         head = QHBoxLayout()
         head.addWidget(now)
         head.addWidget(self.on_top)
         head.addStretch()
+        head.addWidget(self.admin_btn)
         head.addWidget(stop)
         source = QLabel(f"Source : {settings['title']} · Modèle : {settings['model']}")
         source.setStyleSheet("color: gray; font-size: 11px;")
@@ -274,12 +298,43 @@ class CoachWindow(QWidget):
         lay.addWidget(self.scroll, 1)
         self.setStyleSheet(bubble_style(self))
 
-        err = hotkeys.register("coach", settings["hotkey"], self.trigger)
-        key = QKeySequence(settings["hotkey"]).toString(QKeySequence.NativeText)
-        if err:
-            self._status(f"⚠ {err}. Utilisez le bouton « Analyser maintenant » ou changez de raccourci.", True)
+        if settings.get("admin") and not is_admin():
+            self._start_relay()
         else:
-            self._status(f"Appuyez sur {key} en jeu pour analyser la partie.")
+            err = hotkeys.register("coach", settings["hotkey"], self.trigger)
+            if err:
+                self._status(f"⚠ {err}. Utilisez le bouton « Analyser maintenant » ou changez de raccourci.", True)
+            else:
+                self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie. "
+                             "Rien ne se passe en jeu ? Cliquez sur « 🛡 Mode administrateur ».")
+
+    def _key(self) -> str:
+        return QKeySequence(self.s["hotkey"]).toString(QKeySequence.NativeText)
+
+    def _start_relay(self):
+        self.hotkeys.unregister("coach")  # le relais prend la touche à sa place
+        if self.relay is None:
+            self.relay = ElevatedRelay()
+            self.relay.pressed.connect(self.trigger)
+            self.relay.state.connect(self._relay_state)
+        self.admin_btn.setEnabled(False)
+        self._status("Confirmez l'autorisation administrateur demandée par Windows…")
+        self.relay.start(self.s["hotkey"])
+
+    def _relay_state(self, active: bool, msg: str):
+        if self.closing:
+            return
+        if active:
+            self.admin_btn.setText("🛡 Administrateur actif")
+            self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie (raccourci capté en administrateur).")
+            return
+        if msg.startswith("Démarrage"):
+            self._status(msg)
+            return
+        self.admin_btn.setEnabled(True)
+        self.admin_btn.setText("🛡 Mode administrateur")
+        self._status(f"⚠ {msg}", True)
+        self.hotkeys.register("coach", self.s["hotkey"], self.trigger)  # repli : raccourci normal
 
     def _status(self, text: str, error=False):
         self.status.setStyleSheet("color: #c0392b;" if error else "color: gray;")
@@ -371,7 +426,10 @@ class CoachWindow(QWidget):
             self._send(img)
 
     def closeEvent(self, e):
+        self.closing = True
         self.hotkeys.unregister("coach")
+        if self.relay is not None:
+            self.relay.stop()
         if self.worker:
             self.worker.cancel()
         self.closed.emit()

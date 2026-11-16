@@ -35,6 +35,12 @@ défaut). Une fenêtre de coaching s'ouvre : à chaque appui sur le raccourci, m
 modèle, qui répond avec le score, les stats du joueur et des conseils pour la suite. Une capture prise pendant
 une réponse attend la fin de celle-ci.
 
+**Jeux lancés en administrateur** (League of Legends, Valorant… avec Riot Vanguard) : Windows ne laisse pas
+leurs touches parvenir à un programme sans ces droits. Cochez l'option correspondante dans la préparation, ou
+cliquez sur « 🛡 Mode administrateur » dans la fenêtre du coach : après confirmation de Windows, un petit relais
+en administrateur capte le raccourci et prévient l'appli, qui elle reste normale (le glisser-déposer continue
+de marcher). Le relais s'arrête avec le coaching.
+
 En mode Fenêtre, le contenu est capturé même si une autre fenêtre le recouvre. Les jeux en plein écran
 exclusif peuvent donner une image noire : préférez le mode « fenêtré sans bordure ».
 

@@ -3,9 +3,12 @@
 Windows : RegisterHotKey sur une petite fenêtre native invisible ; le message WM_HOTKEY est lu par un
 filtre d'événements natifs de Qt et appelle la fonction associée, dans le fil de l'interface.
 """
+import os
 import sys
+from pathlib import Path
 
-from PySide6.QtCore import QAbstractNativeEventFilter, Qt
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Qt, Signal
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QWidget
 
@@ -101,3 +104,86 @@ class Hotkeys(QAbstractNativeEventFilter):
                     cb()
                     return True, 0
         return False, 0
+
+
+# ---------- Relais en administrateur (jeux lancés en administrateur) ----------
+
+def is_admin() -> bool:
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+class ElevatedRelay(QObject):
+    """Lance AssistantPC en administrateur avec --relais-raccourci et reçoit les appuis par un tube nommé."""
+    pressed = Signal()
+    state = Signal(bool, str)  # actif ?, message
+
+    def __init__(self):
+        super().__init__()
+        self.server: QLocalServer | None = None
+        self.conn: QLocalSocket | None = None
+
+    def start(self, seq: str):
+        self.stop()
+        if sys.platform != "win32":
+            self.state.emit(False, "Disponible seulement sous Windows")
+            return
+        native = to_native(seq)
+        if native is None:
+            self.state.emit(False, f"Touche non prise en charge : {seq}")
+            return
+        import ctypes
+        import getpass
+        name = f"AssistantPC-relais-{getpass.getuser()}-{os.getpid()}"
+        QLocalServer.removeServer(name)
+        self.server = QLocalServer()
+        if not self.server.listen(name):
+            self.state.emit(False, "Impossible de préparer la liaison avec le relais")
+            return
+        self.server.newConnection.connect(self._connected)
+        args = f"--relais-raccourci {native[0]} {native[1]} {name} {os.getpid()}"
+        if getattr(sys, "frozen", False):
+            exe, params = sys.executable, args
+        else:
+            exe = sys.executable
+            params = f'"{Path(__file__).resolve().parent.parent / "run.py"}" {args}'
+        # « runas » : Windows demande la confirmation administrateur (UAC).
+        shell = ctypes.windll.shell32
+        shell.ShellExecuteW.restype = ctypes.c_void_p
+        rc = shell.ShellExecuteW(None, "runas", exe, params, None, 0)
+        if (rc or 0) <= 32:
+            self.stop()
+            self.state.emit(False, "Droits administrateur refusés : le raccourci ne marchera pas dans les jeux "
+                                   "lancés en administrateur.")
+            return
+        self.state.emit(False, "Démarrage du relais administrateur…")
+
+    def _connected(self):
+        self.conn = self.server.nextPendingConnection()
+        if self.conn:
+            self.conn.readyRead.connect(self._read)
+            self.conn.disconnected.connect(lambda: self.state.emit(False, "Relais administrateur arrêté"))
+
+    def _read(self):
+        while self.conn and self.conn.canReadLine():
+            line = bytes(self.conn.readLine()).decode("utf-8", "replace").strip()
+            if line == "HOTKEY":
+                self.pressed.emit()
+            elif line == "OK":
+                self.state.emit(True, "")
+            elif line.startswith("ERR"):
+                self.state.emit(False, line[4:])
+
+    def stop(self):
+        if self.conn is not None:
+            self.conn.blockSignals(True)  # arrêt voulu : pas de message « relais arrêté »
+            self.conn.abort()
+            self.conn = None
+        if self.server is not None:
+            self.server.close()
+            self.server = None
