@@ -5,10 +5,10 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QPalette
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
-                               QPlainTextEdit, QScrollArea, QToolButton, QVBoxLayout,
+                               QPlainTextEdit, QProgressBar, QScrollArea, QToolButton, QVBoxLayout,
                                QWidget)
 
-from ..dictee import Dictation
+from ..dictee import Dictation, join_text
 from ..api import MAX_ATTACHMENTS, MAX_FILE_BYTES, Api, AuthError
 from . import travail
 from .messages import AnswerBubble, UserBubble, bubble_style
@@ -271,12 +271,21 @@ class MainWindow(QWidget):
         self.mic.setCheckable(True)
         self.mic.setToolTip("Dicter (cliquez pour arrêter)")
         self.mic.toggled.connect(self._mic_toggled)
-        self.dictation = Dictation(lambda: self.api, lambda: self.prompt.toPlainText(),
+        self.dictation = Dictation(lambda: self.api, lambda: self._dict_prefix,
                                    lambda: self.config["microphone"])
-        self.dictation.text.connect(self._dictated)
+        self._dict_prefix = self._dict_suffix = ""
+        self.dictation.update.connect(self._dictated)
         self.dictation.failed.connect(self._dictation_failed)
         self.dictation.running.connect(self._dictation_running)
-        self.dictation.busy.connect(lambda b: self.mic.setToolTip("Transcription…" if b else "Dicter (cliquez pour arrêter)"))
+        self.dictation.finished.connect(self._dictation_finished)
+        self.level = QProgressBar()
+        self.level.setRange(0, 100)
+        self.level.setTextVisible(False)
+        self.level.setFixedHeight(4)
+        self.level.setStyleSheet("QProgressBar { border: none; background: palette(mid); border-radius: 2px; }"
+                                 "QProgressBar::chunk { background: #2ecc71; border-radius: 2px; }")
+        self.level.hide()
+        self.dictation.level.connect(self.level.setValue)
         tools = QVBoxLayout()
         tools.setSpacing(4)
         tools.addWidget(attach)
@@ -311,6 +320,7 @@ class MainWindow(QWidget):
         lay.addWidget(self.status)
         lay.addWidget(self.chip_row)
         lay.addLayout(bottom)
+        lay.addWidget(self.level)
 
         self.setStyleSheet(bubble_style(self) + " QFrame#chip { border: 1px solid palette(mid); border-radius: 10px; }")
         self.apply_on_top()
@@ -468,7 +478,13 @@ class MainWindow(QWidget):
 
     def _mic_toggled(self, on: bool):
         if on:
+            if self.dictation.working:  # les dernières transcriptions arrivent encore
+                self._dictation_running(False)
+                return
             self.show_status("")
+            text, cur = self.prompt.toPlainText(), self.prompt.textCursor()
+            self._dict_prefix, self._dict_suffix = text[:cur.selectionStart()], text[cur.selectionEnd():]
+            self.prompt.setReadOnly(True)  # le texte dicté s'écrit en direct ; modifiable après l'arrêt
             self.dictation.start()
         else:
             self.dictation.stop()
@@ -481,18 +497,29 @@ class MainWindow(QWidget):
         self.mic.setStyleSheet("QToolButton { background: #c0392b; border: none; border-radius: 6px; }" if on else "")
         self.prompt.setPlaceholderText("🎤 Je vous écoute… (cliquez de nouveau sur le micro pour arrêter)" if on else
                                        "Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
+        self.level.setVisible(on)
+        if not on and not self.dictation.working:
+            self.prompt.setReadOnly(False)
 
-    def _dictated(self, text: str):
+    def _dictated(self, committed: str, live: str):
+        middle = join_text(committed, live)
+        before, after = self._dict_prefix, self._dict_suffix
+        if before and middle and not before[-1].isspace():
+            before += " "
+        if after and middle and not after[0].isspace():
+            after = " " + after
+        self.prompt.setPlainText(before + middle + after)
         cur = self.prompt.textCursor()
-        cur.movePosition(cur.MoveOperation.End)
-        before = self.prompt.toPlainText()
-        cur.insertText((" " if before and not before[-1].isspace() else "") + text)
+        cur.setPosition(len(before + middle))
         self.prompt.setTextCursor(cur)
+
+    def _dictation_finished(self):
+        self.prompt.setReadOnly(False)
+        if self.dictation.active:  # transcription arrêtée (serveur injoignable…) alors que le micro écoute
+            self.dictation.stop(flush=False)
 
     def _dictation_failed(self, msg: str):
         self.show_status(msg)
-        if isinstance(msg, str) and msg.startswith(("Micro", "Impossible")):
-            self._dictation_running(False)
 
     # ---------- Conversation ----------
 
@@ -551,8 +578,9 @@ class MainWindow(QWidget):
             self.show_status("Retirez d'abord les fichiers en erreur (⚠) :\n" +
                              "\n".join(f"{c.path.name} : {c.error}" for c in failed))
             return
-        if self.dictation.active:
+        if self.dictation.active or self.dictation.working:
             self.dictation.stop(flush=False)
+            self.prompt.setReadOnly(False)
         text = self.prompt.toPlainText().strip()
         ready = [c for c in self.chips if c.ready]
         if not text and not ready:
