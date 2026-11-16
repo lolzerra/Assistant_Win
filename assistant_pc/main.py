@@ -170,7 +170,7 @@ class App:
             self.coach_window.activateWindow()
             return
         w = self.window
-        setup = CoachSetup(self.config, w.models, w.model_box.currentData(), w if w.isVisible() else None)
+        setup = CoachSetup(self.config, w.models, w.model_box.currentData(), w if w.isVisible() else None, w.api)
         setup.setWindowIcon(icone.icon())
         if setup.exec() != CoachSetup.Accepted:
             return

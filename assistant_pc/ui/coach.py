@@ -1,5 +1,7 @@
 """Coach en direct : à chaque appui sur le raccourci, une capture du jeu part au modèle, qui donne le score,
 les stats du joueur (repéré par son pseudo) et des conseils pour la suite de la partie."""
+import json
+import re
 import sys
 from datetime import datetime
 
@@ -7,10 +9,11 @@ from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
                                QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit, QPushButton, QRadioButton,
-                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
+                               QScrollArea, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from ..api import MAX_FILE_BYTES, Api, AuthError
 from ..raccourci import MOUSE_BUTTONS, ElevatedRelay, is_admin, trigger_native
+from ..voix import Speaker
 from . import travail
 from .capture import grab_screen, grab_window, list_windows
 from .fenetre import StreamWorker
@@ -29,8 +32,68 @@ def coach_instructions(pseudo: str, game: str) -> str:
         f"**Stats de {pseudo}** : ses statistiques visibles (éliminations, morts, assistances, argent, niveau, objets…).\n"
         "**Conseils** : 2 à 4 conseils concrets pour la suite de la partie, tirés de ce que tu vois et de "
         "l'évolution depuis les captures précédentes.\n"
-        "N'invente rien : si une information n'est pas visible sur la capture, dis-le en un mot."
+        "N'invente rien : si une information n'est pas visible sur la capture, dis-le en un mot.\n"
+        "Termine TOUJOURS ta réponse par un bloc ```json``` (rien après), avec les valeurs lues sur la capture "
+        "et null pour ce qui n'est pas visible :\n"
+        '{"temps": "mm:ss", "score": "score des équipes ou des joueurs tel qu\'affiché", '
+        '"kills": 0, "morts": 0, "assists": 0, "cs": 0, "or": 0, "niveau": 0, '
+        '"autres": {"autre stat utile du jeu": "valeur"}}'
     )
+
+
+STATS_COLUMNS = ["#", "Heure", "Temps", "Score", "K / M / A", "CS", "Or", "Niv.", "Autres"]
+_JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.S)
+
+
+def visible_text(raw: str) -> str:
+    """Réponse sans le bloc de données (caché à l'écran, même pendant le flux)."""
+    cut = raw.find("```json")
+    if cut >= 0:
+        return raw[:cut].rstrip()
+    return re.sub(r"`{1,3}(j(s(on?)?)?)?$", "", raw)  # début du bloc encore en cours d'écriture
+
+
+def extract_stats(raw: str) -> dict | None:
+    blocks = _JSON_BLOCK.findall(raw)
+    if not blocks:
+        return None
+    text = re.sub(r",\s*([}\]])", r"\1", blocks[-1])  # virgule en trop
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def advice_part(text: str) -> str:
+    """Partie « Conseils » d'une réponse (ce qui est lu à voix haute)."""
+    found = list(re.finditer(r"(?i)\**\s*conseils?\s*\**\s*:?", text))
+    return text[found[-1].end():].strip() if found else ""
+
+
+class CoachAnswer(AnswerBubble):
+    """Réponse du coach : le bloc de données de fin n'est pas affiché ; bouton pour relire les conseils."""
+
+    def __init__(self, speak=None, parent=None):
+        super().__init__(parent)
+        self.raw = ""
+        if speak is not None:
+            again = QToolButton()
+            again.setText("🔊")
+            again.setAutoRaise(True)
+            again.setToolTip("Lire les conseils à voix haute")
+            again.clicked.connect(lambda: speak(advice_part(self.text) or self.text))
+            self.foot.insertWidget(self.foot.count() - 1, again)
+
+    def add_content(self, piece: str):
+        self.raw += piece
+        self.text = visible_text(self.raw)
+        self._schedule()
+
+    def reset_content(self, text: str):
+        self.raw = text
+        self.text = visible_text(self.raw)
+        self._schedule()
 
 
 def screen_label(i: int, screen) -> str:
@@ -45,7 +108,7 @@ def screen_label(i: int, screen) -> str:
 class CoachSetup(QDialog):
     """Choix de la source (écran ou fenêtre) avec aperçu toutes les 0,5 s, pseudo, jeu, modèle, raccourci."""
 
-    def __init__(self, config, models: dict, current_model: str | None, parent=None):
+    def __init__(self, config, models: dict, current_model: str | None, parent=None, api: Api | None = None):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("Coach en direct — préparation")
@@ -127,6 +190,18 @@ class CoachSetup(QDialog):
         form.addRow("Déclencheur", self.trigger_kind)
         form.addRow("Touche", self.key)
         form.addRow("", self.admin)
+        self.speak = QCheckBox("Lire les conseils à voix haute")
+        self.speak.setChecked(bool(config["coach_speak"]))
+        self.voice = QComboBox()
+        self.voice.addItem(config["coach_voice"], config["coach_voice"])
+        self.speak.toggled.connect(self.voice.setEnabled)
+        self.voice.setEnabled(self.speak.isChecked())
+        voice_row = QHBoxLayout()
+        voice_row.addWidget(self.speak)
+        voice_row.addWidget(self.voice, 1)
+        form.addRow("Voix", voice_row)
+        if api is not None:
+            travail.run(api.speech_voices, self._voices_loaded, lambda e: None)
 
         buttons = QDialogButtonBox()
         self.start = buttons.addButton("Démarrer le coaching", QDialogButtonBox.AcceptRole)
@@ -147,6 +222,14 @@ class CoachSetup(QDialog):
         self.timer.timeout.connect(self._refresh_preview)
         self.timer.start(500)
         self._refresh_preview()
+
+    def _voices_loaded(self, voices: list[dict]):
+        current = self.config["coach_voice"]
+        self.voice.clear()
+        for v in voices:
+            self.voice.addItem(v.get("label") or v.get("id"), v.get("id"))
+        if self.voice.findData(current) >= 0:
+            self.voice.setCurrentIndex(self.voice.findData(current))
 
     def _guess_admin(self, text: str):
         if self.admin.isEnabled() and any(k in text.lower() for k in ("league", "lol", "valorant")):
@@ -202,7 +285,8 @@ class CoachSetup(QDialog):
         kind = self.target.currentData()[0]
         self.config.update(coach_pseudo=pseudo, coach_game=self.game.text().strip(), coach_hotkey=seq,
                            coach_source=kind, coach_model=self.model.currentData() or "",
-                           coach_admin=self.admin.isChecked(),
+                           coach_admin=self.admin.isChecked(), coach_speak=self.speak.isChecked(),
+                           coach_voice=self.voice.currentData() or self.config["coach_voice"],
                            coach_target=(self.target.currentData()[1] if kind == "screen"
                                          else self.target.currentText()))
         self.config.save()
@@ -235,14 +319,15 @@ def grab_target(target):
 class CoachStream(StreamWorker):
     """Envoie d'abord la capture au serveur, puis le message, puis lit la réponse en flux."""
 
-    def __init__(self, api: Api, cid, model: str, payload: dict, png: bytes, name: str):
+    def __init__(self, api: Api, cid, model: str, payload: dict, png: bytes | None = None, name: str = ""):
         super().__init__(api, cid, model, payload)
         self.png, self.name = png, name
 
     def _run(self):
         try:
-            info = self.api.upload_bytes(self.png, self.name)
-            self.payload["attachments"] = [info["id"]]
+            if self.png:
+                info = self.api.upload_bytes(self.png, self.name)
+                self.payload["attachments"] = [info["id"]]
         except Exception as e:
             self.failed.emit(e)
             self.finished.emit(False)
@@ -263,6 +348,11 @@ class CoachWindow(QWidget):
         self.answer: AnswerBubble | None = None
         self.pending = None
         self._done = None
+        self.rows: list[dict] = []        # stats relevées : {"n", "heure", "data"}
+        self.kind = "capture"             # type de la réponse en cours : capture ou bilan
+        self.new_game = False
+        self.speaker = Speaker(lambda: self.api, lambda: self.config["coach_voice"])
+        self.speaker.failed.connect(lambda m: self._status("⚠ " + m, True))
 
         game = settings["game"] or "Coach en direct"
         self.setWindowTitle(f"🎮 {game} — {settings['pseudo']}")
@@ -298,6 +388,37 @@ class CoachWindow(QWidget):
         head.addStretch()
         head.addWidget(self.admin_btn)
         head.addWidget(stop)
+        self.speak = QCheckBox("🔊 Conseils à voix haute")
+        self.speak.setChecked(bool(config["coach_speak"]))
+        self.speak.toggled.connect(self._speak_toggled)
+        hush = QToolButton()
+        hush.setText("🔇")
+        hush.setToolTip("Arrêter la lecture")
+        hush.clicked.connect(self.speaker.stop)
+        self.stats_btn = QToolButton()
+        self.stats_btn.setCheckable(True)
+        self.stats_btn.setAutoRaise(True)
+        self.stats_btn.toggled.connect(self._stats_changed)
+        self.end_btn = QPushButton("🏁 Fin de partie : bilan")
+        self.end_btn.setToolTip("Stats finales et résumé de la partie à partir de toutes les captures")
+        self.end_btn.clicked.connect(self.summary)
+        again = QPushButton("🔄 Nouvelle partie")
+        again.setToolTip("Vide le tableau des stats ; les prochaines captures concernent une nouvelle partie")
+        again.clicked.connect(self._new_game)
+        row2 = QHBoxLayout()
+        row2.addWidget(self.speak)
+        row2.addWidget(hush)
+        row2.addWidget(self.stats_btn)
+        row2.addStretch()
+        row2.addWidget(self.end_btn)
+        row2.addWidget(again)
+        self.table = QTableWidget(0, len(STATS_COLUMNS))
+        self.table.setHorizontalHeaderLabels(STATS_COLUMNS)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setMaximumHeight(180)
+        self.table.hide()
         source = QLabel(f"Source : {settings['title']} · Modèle : {settings['model']}")
         source.setStyleSheet("color: gray; font-size: 11px;")
 
@@ -315,6 +436,8 @@ class CoachWindow(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addLayout(head)
+        lay.addLayout(row2)
+        lay.addWidget(self.table)
         lay.addWidget(source)
         lay.addWidget(self.status)
         self.diag = QLabel()
@@ -327,10 +450,66 @@ class CoachWindow(QWidget):
         self.local = None  # détection dans l'appli (crochet + scrutation), en plus du raccourci Windows
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(lambda: self.local and self.local.poll())
+        self._stats_changed()
         if settings.get("admin") and not is_admin():
             self._start_relay()
         else:
             self._start_local()
+
+    # ---------- Voix, stats, bilan ----------
+
+    def _speak_toggled(self, on: bool):
+        self.config["coach_speak"] = on
+        self.config.save()
+        if not on:
+            self.speaker.stop()
+
+    def _stats_changed(self, *_):
+        on = self.stats_btn.isChecked()
+        self.stats_btn.setText(f"📊 Stats relevées ({len(self.rows)}) " + ("▾" if on else "▸"))
+        self.table.setVisible(on)
+        self.end_btn.setEnabled(bool(self.rows) and self.worker is None)
+
+    def _add_row(self, n: int, heure: str, data: dict):
+        self.rows.append({"capture": n, "heure": heure, **data})
+        num = lambda k: "" if data.get(k) is None else str(data.get(k))
+        kda = "" if all(data.get(k) is None for k in ("kills", "morts", "assists")) else \
+            f"{num('kills') or '?'} / {num('morts') or '?'} / {num('assists') or '?'}"
+        autres = data.get("autres") if isinstance(data.get("autres"), dict) else {}
+        cells = [str(n), heure, num("temps"), num("score"), kda, num("cs"), num("or"), num("niveau"),
+                 ", ".join(f"{k} : {v}" for k, v in autres.items() if v is not None)]
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        for c, v in enumerate(cells):
+            self.table.setItem(r, c, QTableWidgetItem(v))
+        self.table.resizeColumnsToContents()
+        self.table.scrollToBottom()
+        self._stats_changed()
+
+    def _new_game(self):
+        self.rows.clear()
+        self.table.setRowCount(0)
+        self.new_game = True
+        self._stats_changed()
+        self._status("Nouvelle partie : le tableau est vidé. Appuyez sur "
+                     f"{self._key()} pour la première analyse.")
+
+    def summary(self):
+        if self.worker is not None or not self.rows:
+            return
+        pseudo = self.s["pseudo"]
+        data = json.dumps(self.rows, ensure_ascii=False, indent=1)
+        text = (f"🏁 Fin de partie. Relevés des statistiques de la partie, du plus ancien au plus récent :\n"
+                f"```json\n{data}\n```\n"
+                f"Fais le bilan de la partie de {pseudo} :\n"
+                "1. **Stats finales** en tableau : score final, durée, K / M / A et ratio KDA "
+                "((kills + assists) / morts), CS par minute si disponible, autres stats utiles ;\n"
+                "2. **Évolution** de la partie et moments clés (d'après les relevés) ;\n"
+                "3. **Points forts** ;\n"
+                "4. **3 axes de progrès** concrets pour les prochaines parties.\n"
+                "Pour ce bilan, ne termine pas par un bloc json.")
+        self.kind = "bilan"
+        self._start(text, f"🏁 Bilan de la partie ({len(self.rows)} relevés)", None)
 
     def _key(self) -> str:
         if self.s["hotkey"] in MOUSE_BUTTONS:
@@ -451,6 +630,14 @@ class CoachWindow(QWidget):
         at = datetime.now()
         name = f"coach-{at:%Y%m%d-%H%M%S}.{ext}"
         text = f"Capture n° {self.count} ({at:%H:%M:%S})."
+        if self.new_game:
+            text = "Nouvelle partie : ne tiens plus compte des captures précédentes. " + text
+            self.new_game = False
+        self.kind = "capture"
+        self.capture_at = (self.count, f"{at:%H:%M:%S}")
+        self._start(text, text, (img, png, name))
+
+    def _start(self, text: str, shown: str, image):
         instructions = coach_instructions(self.s["pseudo"], self.s["game"])
         if self.config["instructions"]:
             instructions = (self.config["instructions"] + "\n\n" + instructions)[-4000:]
@@ -458,17 +645,20 @@ class CoachWindow(QWidget):
         if self.model_info.get("think_mode") in ("toggle", "levels"):
             payload["think_level"] = 0  # réponse rapide : il lit en jouant
 
-        self._append(UserBubble(text, [{"name": name, "image": img, "kind": "image"}]))
-        self.answer = AnswerBubble()
+        img, png, name = image if image else (None, None, "")
+        self._append(UserBubble(shown, [{"name": name, "image": img, "kind": "image"}] if img is not None else []))
+        self.answer = CoachAnswer(self.speaker.say)
         self._append(self.answer)
         self._done = None
-        self._status(f"Analyse en cours… (déclenchée par : {self.last_source})")
+        self._status("Bilan en cours…" if self.kind == "bilan" else
+                     f"Analyse en cours… (déclenchée par : {self.last_source})")
         self.worker = CoachStream(self.api, self.cid, self.s["model"], payload, png, name)
         self.worker.conversation.connect(lambda cid: setattr(self, "cid", cid))
         self.worker.event.connect(self._on_event)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._on_finished)
         self.worker.start()
+        self._stats_changed()
 
     def _append(self, w: QWidget):
         self.thread.insertWidget(self.thread.count() - 1, w)
@@ -495,17 +685,25 @@ class CoachWindow(QWidget):
             self._status("⚠ Session expirée : reconnectez-vous depuis la fenêtre principale.", True)
 
     def _on_finished(self, stopped: bool):
-        if self.answer:
-            self.answer.finish(self._done, stopped)
+        a = self.answer
+        if a:
+            a.finish(self._done, stopped)
+            if self.kind == "capture" and not stopped:
+                data = extract_stats(a.raw)
+                if data:
+                    self._add_row(*self.capture_at, data)
+                if self.speak.isChecked():
+                    self.speaker.say(advice_part(a.text))
         self.worker = None
-        key = QKeySequence(self.s["hotkey"]).toString(QKeySequence.NativeText)
-        self._status(f"Appuyez sur {key} en jeu pour une nouvelle analyse.")
+        self._stats_changed()
+        self._status(f"Appuyez sur {self._key()} en jeu pour une nouvelle analyse.")
         if self.pending is not None:
             img, self.pending = self.pending, None
             self._send(img)
 
     def closeEvent(self, e):
         self.closing = True
+        self.speaker.stop()
         self.auto_timer.stop()
         self._stop_local()
         if self.relay is not None:

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "AssistantPC"
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 
 DEFAULT_URL = "https://192.168.1.41:8443"
 DEFAULT_FINGERPRINT = "18:28:CD:69:F6:71:DA:A7:5E:9A:39:B9:F1:65:C1:9F:3E:84:72:EF:52:02:CA:69:83:75:4E:6C:D8:C9:1B:32"
@@ -33,7 +33,9 @@ DEFAULTS = {
     "coach_source": "screen",
     "coach_target": "",
     "coach_model": "",
-    "coach_admin": False,  # jeu lancé en administrateur : raccourci capté par un relais élevé  # vérifie les Releases GitHub au démarrage
+    "coach_admin": False,
+    "coach_speak": True,   # lire les conseils à voix haute
+    "coach_voice": "tom",  # jeu lancé en administrateur : raccourci capté par un relais élevé  # vérifie les Releases GitHub au démarrage
     "geometry": None,
 }
 

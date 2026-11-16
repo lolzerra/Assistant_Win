@@ -257,7 +257,7 @@ class AnswerBubble(QFrame):
         self.error.hide()
         lay.addWidget(self.error)
 
-        foot = QHBoxLayout()
+        self.foot = foot = QHBoxLayout()
         self.stats = QLabel("…")
         self.stats.setStyleSheet("color: gray; font-size: 11px;")
         self.copy_btn = QPushButton("📋 Copier")

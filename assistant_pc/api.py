@@ -204,6 +204,18 @@ class Api:
         return self._request("POST", "/api/attachments", params={"name": name}, content=data,
                              headers={"Content-Type": "application/octet-stream"}).json()
 
+    def speech_voices(self) -> list[dict]:
+        return self._request("GET", "/api/speech/voices").json().get("voices", [])
+
+    def speech_segments(self, text: str) -> list[str]:
+        """Markdown → phrases à dire (le serveur ignore le code et adapte les tableaux)."""
+        return self._request("POST", "/api/speech/segments", json={"text": text[:200_000]}).json().get("segments", [])
+
+    def speech_audio(self, text: str, voice: str) -> bytes:
+        """Une phrase → WAV (voix Piper du serveur)."""
+        return self._request("POST", "/api/speech/audio", json={"text": text[:2000], "voice": voice},
+                             timeout=40).content
+
     def transcribe(self, wav: bytes, prompt: str = "") -> str:
         """Dictée : un segment WAV 16 kHz mono, transcrit par le serveur."""
         params = {"prompt": prompt} if prompt else {}

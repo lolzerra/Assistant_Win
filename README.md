@@ -35,6 +35,14 @@ défaut). Une fenêtre de coaching s'ouvre : à chaque appui sur le raccourci, m
 modèle, qui répond avec le score, les stats du joueur et des conseils pour la suite. Une capture prise pendant
 une réponse attend la fin de celle-ci.
 
+**Stats et bilan** : chaque analyse se termine par un petit bloc de données (temps, score, K / M / A, CS, or,
+niveau, autres) caché à l'écran et rangé dans le tableau « 📊 Stats relevées ». « 🏁 Fin de partie : bilan »
+envoie tous les relevés au modèle, qui donne les stats finales, l'évolution, les points forts et 3 axes de
+progrès. « 🔄 Nouvelle partie » vide le tableau.
+
+**Voix** : les conseils de chaque analyse sont lus à voix haute avec les voix du serveur (choix dans la
+préparation) ; 🔇 arrête la lecture, 🔊 sous une réponse la relit.
+
 **Jeux lancés en administrateur** (League of Legends, Valorant… avec Riot Vanguard) : Windows ne laisse pas
 leurs touches parvenir à un programme sans ces droits. Cochez l'option correspondante dans la préparation, ou
 cliquez sur « 🛡 Mode administrateur » dans la fenêtre du coach : après confirmation de Windows, un petit relais
