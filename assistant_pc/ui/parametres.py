@@ -4,13 +4,14 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout)
 
 from ..api import Api, ApiError
-from ..config import DEFAULT_FINGERPRINT, DEFAULT_URL, normalize_fingerprint, set_start_with_windows
+from ..config import VERSION, DEFAULT_FINGERPRINT, DEFAULT_URL, normalize_fingerprint, set_start_with_windows
 from . import travail
 from .connexion import http_warning_label
 
 
 class SettingsDialog(QDialog):
     logout_requested = Signal()
+    check_updates = Signal()
 
     def __init__(self, config, token: str | None, parent=None):
         super().__init__(parent)
@@ -58,6 +59,16 @@ class SettingsDialog(QDialog):
         wl.addWidget(self.on_top)
         wl.addWidget(self.startup)
 
+        self.auto_update = QCheckBox("Chercher les mises à jour au démarrage (sur GitHub)")
+        self.auto_update.setChecked(config["auto_update"])
+        upd = QGroupBox(f"Mises à jour — version installée : {VERSION}")
+        ul = QHBoxLayout(upd)
+        ul.addWidget(self.auto_update)
+        ul.addStretch()
+        check = QPushButton("Vérifier maintenant")
+        check.clicked.connect(self.check_updates.emit)
+        ul.addWidget(check)
+
         # Consignes
         self.instructions = QPlainTextEdit(config["instructions"])
         self.instructions.setPlaceholderText("Ex. : Réponds de façon concise. Tutoie-moi. Montants en euros.")
@@ -83,7 +94,7 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         lay = QVBoxLayout(self)
-        for w in (server, win, ins, account):
+        for w in (server, win, upd, ins, account):
             lay.addWidget(w)
         lay.addWidget(buttons)
 
@@ -150,6 +161,7 @@ class SettingsDialog(QDialog):
             else:
                 self.config["start_with_windows"] = self.startup.isChecked()
         self.config.update(server_url=url, fingerprint=fp, always_on_top=self.on_top.isChecked(),
+                           auto_update=self.auto_update.isChecked(),
                            instructions=self.instructions.toPlainText().strip()[:4000])
         self.config.save()
         self.accept()

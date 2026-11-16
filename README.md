@@ -29,9 +29,16 @@ Petite appli Windows qui envoie fichiers et consignes au serveur Chat IA maison 
   renouvelé). Si l'empreinte ne correspond pas, la connexion est refusée, sans possibilité de passer outre.
 - `http://…:8080` reste possible, à saisir à la main, avec un avertissement : tout circule alors en clair.
 - Chaque requête porte l'en-tête `X-Client: pc`.
-- Aucune autre connexion : pas de télémétrie, pas de mise à jour automatique, pas de proxy système, et aucune
+- Aucune autre connexion (hormis la vérification des mises à jour sur GitHub) : pas de télémétrie, pas de proxy système, et aucune
   ressource externe chargée dans les réponses.
 - Réglages : `%APPDATA%\AssistantPC\config.json` (sans mot de passe ni jeton).
+
+## Mises à jour
+
+Au démarrage (désactivable dans les paramètres) et via « Vérifier les mises à jour », l'appli consulte la
+dernière Release GitHub de `lolzerra/Assistant_Win`. C'est la seule connexion en dehors du serveur maison.
+Si une version plus récente existe, elle propose de la télécharger. L'exe est vérifié (taille et SHA-256),
+remplacé sur place, puis relancé. Il doit donc se trouver dans un dossier où l'on peut écrire.
 
 ## Compiler
 

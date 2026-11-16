@@ -25,8 +25,19 @@ jobs:
         with:
           name: AssistantPC
           path: dist/AssistantPC.exe
+      - name: Empreinte SHA-256
+        shell: pwsh
+        run: (Get-FileHash dist/AssistantPC.exe -Algorithm SHA256).Hash.ToLower() + "  AssistantPC.exe" | Out-File -Encoding ascii -NoNewline dist/AssistantPC.exe.sha256
+      - name: Vérifier que l'étiquette correspond à la version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path assistant_pc/config.py -Pattern 'VERSION = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "Etiquette ${{ github.ref_name }} mais VERSION = $v" }
       - name: Publier la version
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/AssistantPC.exe
+          files: |
+            dist/AssistantPC.exe
+            dist/AssistantPC.exe.sha256

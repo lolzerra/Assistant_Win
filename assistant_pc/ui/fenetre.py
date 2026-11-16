@@ -178,6 +178,7 @@ class MainWindow(QWidget):
     auth_lost = Signal()
     open_settings = Signal()
     quit_requested = Signal()
+    check_updates = Signal()
 
     def __init__(self, config, api: Api, parent=None):
         super().__init__(parent)
@@ -222,6 +223,7 @@ class MainWindow(QWidget):
         more.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(more)
         menu.addAction("Paramètres…", self.open_settings.emit)
+        menu.addAction("Vérifier les mises à jour…", self.check_updates.emit)
         menu.addSeparator()
         menu.addAction("Quitter", self.quit_requested.emit)
         more.setMenu(menu)

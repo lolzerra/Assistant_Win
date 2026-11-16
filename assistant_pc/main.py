@@ -2,17 +2,18 @@
 import getpass
 import sys
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, Qt, QThread, QTimer
 from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import coffre
+from . import coffre, maj
 from .api import Api, ApiError
 from .config import APP_NAME, VERSION, Config
 from .ui import icone, travail
 from .ui.connexion import LoginDialog
 from .ui.fenetre import MainWindow
+from .ui.miseajour import Updater
 from .ui.parametres import SettingsDialog
 
 SERVER_NAME = f"{APP_NAME}-{getpass.getuser()}"
@@ -34,10 +35,12 @@ def dark_palette() -> QPalette:
 
 
 class App:
-    def __init__(self, qapp: QApplication, start_hidden: bool):
+    def __init__(self, qapp: QApplication, server: QLocalServer, start_hidden: bool, updated: bool):
         self.qapp = qapp
+        self.server = server
         self.config = Config()
         self.window: MainWindow | None = None
+        maj.cleanup()
 
         self.tray = QSystemTrayIcon(icone.icon())
         self.tray.setToolTip("Assistant PC")
@@ -45,6 +48,7 @@ class App:
         menu.addAction("Afficher", self.show)
         menu.addAction("Nouvelle conversation", self.new_conversation)
         menu.addAction("Paramètres…", self.settings)
+        menu.addAction("Vérifier les mises à jour", lambda: self.updater.check(manual=True))
         menu.addSeparator()
         quit_action = QAction("Quitter", menu)
         quit_action.triggered.connect(self.quit)
@@ -53,12 +57,19 @@ class App:
         self.tray.activated.connect(self._tray_clicked)
         self.tray.show()
         self._menu = menu
+        self.updater = Updater(lambda: self.window if self.window and self.window.isVisible() else None, self.tray)
+        self.updater.before_restart.connect(self.server.close)
+        self.updater.restart.connect(self.quit)
 
         token = coffre.load_token()
         if not token and not self.login():
             raise SystemExit(0)
         self.open_window(Api(self.config["server_url"], self.config["fingerprint"], coffre.load_token()),
                          show=not start_hidden)
+        if updated:
+            self.tray.showMessage("Assistant PC", f"Mis à jour en version {VERSION}.", icone.icon(), 4000)
+        if self.config["auto_update"]:
+            QTimer.singleShot(3000, lambda: self.updater.check(manual=False))
 
     # ---------- Connexion ----------
 
@@ -83,6 +94,7 @@ class App:
         self.window.auth_lost.connect(self._auth_lost)
         self.window.open_settings.connect(self.settings)
         self.window.quit_requested.connect(self.quit)
+        self.window.check_updates.connect(lambda: self.updater.check(manual=True))
         if show:
             self.window.bring_to_front()
 
@@ -124,6 +136,7 @@ class App:
     def settings(self):
         dlg = SettingsDialog(self.config, self.window.api.token, self.window)
         dlg.logout_requested.connect(self.logout)
+        dlg.check_updates.connect(lambda: self.updater.check(manual=True))
         old = (self.config["server_url"], self.config["fingerprint"])
         if dlg.exec() == SettingsDialog.Accepted:
             if (self.config["server_url"], self.config["fingerprint"]) != old:
@@ -161,17 +174,25 @@ def main():
         qapp.setPalette(dark_palette())
 
     # Instance unique : un second lancement réaffiche la fenêtre existante.
+    updated = "--apres-maj" in sys.argv
     sock = QLocalSocket()
     sock.connectToServer(SERVER_NAME)
-    if sock.waitForConnected(300):
+    if not updated and sock.waitForConnected(300):
         sock.write(b"show")
         sock.waitForBytesWritten(300)
         return 0
     QLocalServer.removeServer(SERVER_NAME)
     server = QLocalServer()
-    server.listen(SERVER_NAME)
 
-    app = App(qapp, start_hidden="--cache" in sys.argv)
+    # Juste après une mise à jour, l'ancienne version peut encore être en train de se fermer.
+    if not server.listen(SERVER_NAME) and updated:
+        for _ in range(20):
+            QLocalServer.removeServer(SERVER_NAME)
+            if server.listen(SERVER_NAME):
+                break
+            QThread.msleep(250)
+
+    app = App(qapp, server, start_hidden="--cache" in sys.argv, updated=updated)
 
     def other_instance():
         conn = server.nextPendingConnection()
