@@ -11,6 +11,8 @@ from array import array
 
 from PySide6.QtCore import QObject, Signal
 
+from .spectre import spectrum
+
 RATE = 16000
 BLOCK = 320                 # 20 ms
 PAUSE_BLOCKS = 40           # 0,8 s de silence termine un segment
@@ -142,7 +144,7 @@ def join_text(a: str, b: str) -> str:
 
 class Dictation(QObject):
     update = Signal(str, str)   # texte figé, texte provisoire du segment en cours
-    level = Signal(int)         # niveau du micro, 0 à 100
+    level = Signal(list)        # spectre du micro (bandes de 0 à 100), graves d'abord
     failed = Signal(str)
     running = Signal(bool)      # le micro écoute
     finished = Signal()         # toutes les transcriptions sont arrivées
@@ -241,6 +243,7 @@ class Dictation(QObject):
 
     def _listen_loop(self):
         preroll: list[bytes] = []
+        recent: list[bytes] = []
         noise = None
         calib: list[float] = []
         silence = 0
@@ -251,8 +254,9 @@ class Dictation(QObject):
                 break
             lv = rms(block)
             n += 1
-            if n % 2 == 0:  # 25 fois par seconde, pour l'onde
-                self.level.emit(level_of(lv))
+            recent = (recent + [block])[-2:]
+            if n % 2 == 0:  # 25 fois par seconde, pour le visualiseur
+                self.level.emit(spectrum(array("h", b"".join(recent))))
             if noise is None:  # 0,2 s pour mesurer le bruit de fond
                 calib.append(lv)
                 preroll.append(block)
@@ -283,7 +287,7 @@ class Dictation(QObject):
         with self._lock:
             if not self._cancel.is_set():
                 self._close_segment()
-        self.level.emit(0)
+        self.level.emit([])
 
     def _close_segment(self):  # sous self._lock
         if self._segment and self._speech >= MIN_SPEECH_BLOCKS:
