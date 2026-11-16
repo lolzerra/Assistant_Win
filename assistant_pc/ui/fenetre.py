@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QIODevice, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent, QPalette
+from PySide6.QtGui import QKeyEvent, QPalette, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
                                QPlainTextEdit, QScrollArea, QToolButton, QVBoxLayout,
                                QWidget)
@@ -13,6 +13,7 @@ from ..dictee import Dictation, join_text
 from ..api import MAX_ATTACHMENTS, MAX_FILE_BYTES, Api, AuthError
 from . import travail
 from .capture import Capture
+from .images import THUMB, ImagePreview, load_image, square_thumb
 from .onde import Waveform
 from .messages import AnswerBubble, UserBubble, bubble_style
 
@@ -23,7 +24,8 @@ THINK_LEVELS = [("Réflexion : auto", None), ("Sans réflexion", 0), ("Réflexio
 # ---------- Pièces jointes ----------
 
 class Chip(QFrame):
-    """Un fichier joint : envoyé au serveur dès qu'il est déposé, retirable avant l'envoi du message."""
+    """Un fichier joint : envoyé au serveur dès qu'il est déposé, retirable avant l'envoi du message.
+    Une image s'affiche en vignette carrée (sans titre, clic pour l'agrandir)."""
     changed = Signal()
     removed = Signal(object)
 
@@ -35,18 +37,39 @@ class Chip(QFrame):
         self.info: dict | None = None
         self.error: str | None = None
         self.cancelled = False
+        self.image = load_image(path, data)
+        self.thumb: QPixmap | None = None
         self.setObjectName("chip")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 2, 2, 2)
-        lay.setSpacing(4)
-        self.label = QLabel()
-        lay.addWidget(self.label)
-        x = QToolButton()
+
+        x = QToolButton(self)
         x.setText("✕")
-        x.setAutoRaise(True)
         x.setToolTip("Retirer")
+        x.setCursor(Qt.PointingHandCursor)
         x.clicked.connect(self._remove)
-        lay.addWidget(x)
+        if not self.image.isNull():
+            self.thumb = square_thumb(self.image, THUMB)
+            self.setFixedSize(THUMB + 4, THUMB + 4)
+            self.setCursor(Qt.PointingHandCursor)
+            pic = QLabel(self)
+            pic.setPixmap(self.thumb)
+            pic.setGeometry(2, 2, THUMB, THUMB)
+            self.state = QLabel(self)
+            self.state.setAlignment(Qt.AlignCenter)
+            self.state.setGeometry(2, 2, THUMB, THUMB)
+            self.state.setStyleSheet("background: rgba(0,0,0,120); color: white; font-size: 18px;")
+            x.setStyleSheet("QToolButton { background: rgba(0,0,0,160); color: white; border: none;"
+                            " border-radius: 9px; font-size: 10px; }")
+            x.setGeometry(THUMB + 4 - 21, 3, 18, 18)
+            x.raise_()
+            self.label = None
+        else:
+            x.setAutoRaise(True)
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(8, 2, 2, 2)
+            lay.setSpacing(4)
+            self.label = QLabel()
+            lay.addWidget(self.label)
+            lay.addWidget(x)
         self._show("⏳")
         job = (lambda: api.upload(path)) if path else (lambda: api.upload_bytes(data, name))
         travail.run(job, self._uploaded, self._failed)
@@ -60,9 +83,18 @@ class Chip(QFrame):
         return self.info is None and self.error is None
 
     def _show(self, state: str, tip: str = ""):
+        self.setToolTip(tip or self.where)
+        if self.label is None:  # vignette : seul l'état s'affiche par-dessus
+            overlay = {"⏳": "⏳", "⚠": "⚠"}.get(state, "")
+            self.state.setText(overlay)
+            self.state.setVisible(bool(overlay))
+            return
         name = self.name if len(self.name) <= 28 else self.name[:25] + "…"
         self.label.setText(f"{state} {name}")
-        self.setToolTip(tip or self.where)
+
+    def mouseReleaseEvent(self, e):
+        if self.thumb is not None and e.button() == Qt.LeftButton:
+            ImagePreview(self.image, self.name, self.window()).exec()
 
     def _uploaded(self, info: dict):
         if self.cancelled:
@@ -77,7 +109,7 @@ class Chip(QFrame):
         if self.cancelled:
             return
         self.error = travail.message(e)
-        self._show("⚠", self.error)
+        self._show("⚠", f"{self.where}\n{self.error}")
         self.setStyleSheet("QFrame#chip { border-color: #c0392b; }")
         self.changed.emit()
 
@@ -670,7 +702,7 @@ class MainWindow(QWidget):
         if self.think_box.isEnabled() and self.think_box.currentData() is not None:
             payload["think_level"] = self.think_box.currentData()
 
-        self._append(UserBubble(text, [c.info for c in ready]))
+        self._append(UserBubble(text, [{**c.info, "image": c.image} if c.thumb else c.info for c in ready]))
         self.answer = AnswerBubble()
         self._append(self.answer)
         self._stick = True

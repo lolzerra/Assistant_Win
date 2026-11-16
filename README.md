@@ -16,7 +16,7 @@ Petite appli Windows qui envoie fichiers et consignes au serveur Chat IA maison 
 - Glisser des fichiers dans la fenêtre (ou **+** → Pièce jointe, ou les coller depuis l'Explorateur) : PDF, Word, Excel, images, texte.
   25 Mo et 10 fichiers au maximum par message. Ils partent au serveur dès le dépôt.
 - **+** → **Capture d'écran** : rectangle libre (glisser), fenêtre (cliquer dessus) ou écran entier (celui de la souris).
-  Échap ou clic droit pour annuler. La capture devient une pièce jointe PNG. Une image copiée se colle aussi avec Ctrl+V.
+  Échap ou clic droit pour annuler. La capture devient une pièce jointe PNG, affichée en vignette (clic pour agrandir). Une image copiée se colle aussi avec Ctrl+V.
 - Écrire la consigne, **Entrée** pour envoyer, **Maj+Entrée** pour aller à la ligne, **Stop** pour arrêter la réponse.
 - **Micro** (sous le trombone) : dictée, micro au choix dans les paramètres. Le texte s'affiche en direct (provisoire, puis figé à chaque pause) ; un visualiseur de spectre (graves à gauche, aigus à droite) s'affiche en haut de la zone de texte. Dans les paramètres, une barre verte montre si le micro choisi capte le son.
   Cliquez de nouveau pour arrêter. Windows doit autoriser les applications de bureau à utiliser le micro.

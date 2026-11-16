@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPus
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import rendu
+from .images import ImagePreview, square_thumb
 
 
 class MarkdownView(QTextBrowser):
@@ -157,15 +158,39 @@ class CodeBlock(QFrame):
         QTimer.singleShot(1500, lambda: self.copy_btn.setText("📋 Copier le code"))
 
 
+class Thumb(QLabel):
+    """Vignette d'une image envoyée ; clic pour l'agrandir."""
+
+    def __init__(self, image, name: str, parent=None):
+        super().__init__(parent)
+        self.image, self.name = image, name
+        self.setPixmap(square_thumb(image, 64))
+        self.setToolTip(name)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            ImagePreview(self.image, self.name, self.window()).exec()
+
+
 class UserBubble(QFrame):
     def __init__(self, text: str, attachments: list[dict], parent=None):
         super().__init__(parent)
         self.setObjectName("user")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
-        if attachments:
+        images = [a for a in attachments if a.get("image") is not None]
+        others = [a for a in attachments if a.get("image") is None]
+        if images:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            for a in images:
+                row.addWidget(Thumb(a["image"], a.get("name", "")))
+            row.addStretch()
+            lay.addLayout(row)
+        if others:
             files = QLabel("  ".join(("🖼 " if a.get("kind") == "image" else "📄 ") + a.get("name", "?")
-                                     for a in attachments))
+                                     for a in others))
             files.setWordWrap(True)
             files.setStyleSheet("color: gray;")
             lay.addWidget(files)
