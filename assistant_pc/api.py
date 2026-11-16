@@ -204,6 +204,13 @@ class Api:
         return self._request("POST", "/api/attachments", params={"name": name}, content=data,
                              headers={"Content-Type": "application/octet-stream"}).json()
 
+    def transcribe(self, wav: bytes, prompt: str = "") -> str:
+        """Dictée : un segment WAV 16 kHz mono, transcrit par le serveur."""
+        params = {"prompt": prompt} if prompt else {}
+        r = self._request("POST", "/api/transcribe", params=params, content=wav,
+                          headers={"Content-Type": "audio/wav"}, timeout=40)
+        return str(r.json().get("text", ""))
+
     def send(self, cid: int, payload: dict, stop: threading.Event):
         """Génère les événements du flux (un objet JSON par ligne) jusqu'à la fin ou l'arrêt demandé."""
         timeout = httpx.Timeout(connect=6, read=600, write=120, pool=10)  # chargement du modèle, longue réflexion

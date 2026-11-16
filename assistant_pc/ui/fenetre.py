@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxL
                                QPlainTextEdit, QPushButton, QScrollArea, QToolButton, QVBoxLayout,
                                QWidget)
 
+from ..dictee import Dictation
 from ..api import MAX_ATTACHMENTS, MAX_FILE_BYTES, Api, AuthError
 from . import travail
 from .messages import AnswerBubble, UserBubble, bubble_style
@@ -263,6 +264,21 @@ class MainWindow(QWidget):
         attach.setText("📎")
         attach.setToolTip("Joindre des fichiers")
         attach.clicked.connect(self._pick_files)
+        self.mic = QToolButton()
+        self.mic.setText("🎤")
+        self.mic.setCheckable(True)
+        self.mic.setToolTip("Dicter (cliquez pour arrêter)")
+        self.mic.toggled.connect(self._mic_toggled)
+        self.dictation = Dictation(lambda: self.api, lambda: self.prompt.toPlainText())
+        self.dictation.text.connect(self._dictated)
+        self.dictation.failed.connect(self._dictation_failed)
+        self.dictation.running.connect(self._dictation_running)
+        self.dictation.busy.connect(lambda b: self.mic.setToolTip("Transcription…" if b else "Dicter (cliquez pour arrêter)"))
+        tools = QVBoxLayout()
+        tools.setSpacing(4)
+        tools.addWidget(attach)
+        tools.addWidget(self.mic)
+        tools.addStretch()
         self.prompt = PromptEdit()
         self.prompt.setPlaceholderText("Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
         self.prompt.setFixedHeight(76)
@@ -272,7 +288,7 @@ class MainWindow(QWidget):
         self.send_btn.setDefault(True)
         self.send_btn.clicked.connect(self._send_or_stop)
         bottom = QHBoxLayout()
-        bottom.addWidget(attach, 0, Qt.AlignTop)
+        bottom.addLayout(tools)
         bottom.addWidget(self.prompt, 1)
         bottom.addWidget(self.send_btn, 0, Qt.AlignBottom)
 
@@ -418,6 +434,35 @@ class MainWindow(QWidget):
         self.send_btn.setText("Stop" if busy else ("Envoi…" if uploading else "Envoyer"))
         self.send_btn.setEnabled(busy or not uploading)
 
+    # ---------- Dictée ----------
+
+    def _mic_toggled(self, on: bool):
+        if on:
+            self.show_status("")
+            self.dictation.start()
+        else:
+            self.dictation.stop()
+
+    def _dictation_running(self, on: bool):
+        self.mic.blockSignals(True)
+        self.mic.setChecked(on)
+        self.mic.blockSignals(False)
+        self.mic.setStyleSheet("QToolButton { background: #c0392b; border-radius: 4px; }" if on else "")
+        self.prompt.setPlaceholderText("🎤 Je vous écoute… (cliquez de nouveau sur le micro pour arrêter)" if on else
+                                       "Votre consigne… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)")
+
+    def _dictated(self, text: str):
+        cur = self.prompt.textCursor()
+        cur.movePosition(cur.MoveOperation.End)
+        before = self.prompt.toPlainText()
+        cur.insertText((" " if before and not before[-1].isspace() else "") + text)
+        self.prompt.setTextCursor(cur)
+
+    def _dictation_failed(self, msg: str):
+        self.show_status(msg)
+        if isinstance(msg, str) and msg.startswith(("Micro", "Impossible")):
+            self._dictation_running(False)
+
     # ---------- Conversation ----------
 
     def new_conversation(self):
@@ -437,8 +482,18 @@ class MainWindow(QWidget):
         self.empty.show()
 
     def _append(self, widget: QWidget):
+        """Questions décalées vers la droite, réponses vers la gauche."""
         self.empty.hide()
-        self.thread.insertWidget(self.thread.count() - 1, widget)
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        if isinstance(widget, UserBubble):
+            lay.addSpacing(56)
+            lay.addWidget(widget, 1)
+        else:
+            lay.addWidget(widget, 1)
+            lay.addSpacing(28)
+        self.thread.insertWidget(self.thread.count() - 1, row)
 
     def _scrolled(self, value):
         bar = self.scroll.verticalScrollBar()
@@ -465,6 +520,8 @@ class MainWindow(QWidget):
             self.show_status("Retirez d'abord les fichiers en erreur (⚠) :\n" +
                              "\n".join(f"{c.path.name} : {c.error}" for c in failed))
             return
+        if self.dictation.active:
+            self.dictation.stop(flush=False)
         text = self.prompt.toPlainText().strip()
         ready = [c for c in self.chips if c.ready]
         if not text and not ready:
@@ -512,6 +569,8 @@ class MainWindow(QWidget):
             a.add_thinking(ev["thinking"])
         if isinstance(ev.get("tool"), dict):
             a.set_step(ev["tool"])
+        if isinstance(ev.get("tool_done"), dict):
+            a.tool_done(ev["tool_done"])
         if ev.get("error"):
             a.set_error(str(ev["error"]))
         if ev.get("done"):
