@@ -10,7 +10,7 @@ import sys
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QAbstractButton, QDialog, QLabel, QVBoxLayout, QWidget
 
 
 # ---------- Fenêtres de Windows ----------
@@ -198,6 +198,90 @@ class Overlay(QWidget):
         p.end()
 
 
+class ScreenThumb(QAbstractButton):
+    """Miniature d'un écran, numérotée, surlignée au survol."""
+
+    def __init__(self, shot: Shot, number: int, primary: bool, parent=None):
+        super().__init__(parent)
+        self.shot, self.number, self.primary = shot, number, primary
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(f"Écran {number}{' (principal)' if primary else ''} — "
+                        f"{shot.pixmap.width()} × {shot.pixmap.height()}")
+        self.setAttribute(Qt.WA_Hover)
+
+    def enterEvent(self, e):
+        self.update()
+
+    def leaveEvent(self, e):
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(3, 3, -3, -3)
+        p.drawPixmap(r, self.shot.pixmap, self.shot.pixmap.rect())
+        if not self.underMouse():
+            p.fillRect(r, QColor(0, 0, 0, 70))
+        p.setPen(QPen(QColor("#4f7cff") if self.underMouse() else QColor(128, 128, 128), 3 if self.underMouse() else 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r)
+        badge = QRect(r.x() + 6, r.y() + 6, 26, 26)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4f7cff") if self.underMouse() else QColor(20, 20, 20, 200))
+        p.drawEllipse(badge)
+        p.setPen(QColor("white"))
+        f = p.font()
+        f.setBold(True)
+        f.setPointSize(11)
+        p.setFont(f)
+        p.drawText(badge, Qt.AlignCenter, str(self.number))
+        p.end()
+
+
+class ScreenPicker(QDialog):
+    """Miniatures de tous les écrans, placées comme les écrans eux-mêmes ; un clic choisit l'écran."""
+    picked = Signal(object)
+
+    MAX_W, MAX_H = 640, 360
+
+    def __init__(self, shots: list[Shot], anchor: QPoint | None):
+        super().__init__(None, Qt.Dialog | Qt.WindowStaysOnTopHint)
+        self.setWindowTitle("Capture d'écran — choisissez l'écran")
+        rects = [sh.native_rect() for sh in shots]
+        box = rects[0]
+        for r in rects[1:]:
+            box = box.united(r)
+        scale = min(self.MAX_W / box.width(), self.MAX_H / box.height())
+        canvas = QWidget()
+        canvas.setFixedSize(round(box.width() * scale), round(box.height() * scale))
+        primary = QGuiApplication.primaryScreen()
+        for i, (sh, r) in enumerate(zip(shots, rects), 1):
+            t = ScreenThumb(sh, i, sh.screen is primary, canvas)
+            t.setGeometry(round((r.x() - box.x()) * scale), round((r.y() - box.y()) * scale),
+                          round(r.width() * scale), round(r.height() * scale))
+            t.clicked.connect(lambda _=False, sh=sh: self._pick(sh))
+        hint = QLabel("Cliquez sur l'écran à capturer · Échap pour annuler")
+        hint.setStyleSheet("color: gray;")
+        lay = QVBoxLayout(self)
+        lay.addWidget(canvas, alignment=Qt.AlignCenter)
+        lay.addWidget(hint, alignment=Qt.AlignCenter)
+        self.adjustSize()
+        if anchor is not None:  # à l'endroit où était l'appli
+            g = self.frameGeometry()
+            g.moveCenter(anchor)
+            area = (QGuiApplication.screenAt(anchor) or QGuiApplication.primaryScreen()).availableGeometry()
+            g.moveLeft(max(area.left(), min(g.left(), area.right() - g.width())))
+            g.moveTop(max(area.top(), min(g.top(), area.bottom() - g.height())))
+            self.move(g.topLeft())
+
+    def _pick(self, shot: Shot):
+        pm = shot.pixmap.copy()
+        pm.setDevicePixelRatio(1)
+        self.picked.emit(pm)
+        self.accept()
+
+
 class Capture(QObject):
     """Mène une capture : la fenêtre de l'appli est masquée par l'appelant avant start()."""
     done = Signal(object)  # QPixmap, ou None si annulée
@@ -206,16 +290,26 @@ class Capture(QObject):
         super().__init__()
         self.overlays: list[Overlay] = []
 
-    def start(self, mode: str):
+    def start(self, mode: str, anchor: QPoint | None = None):
         # Laisse à Windows le temps d'effacer la fenêtre de l'appli avant la photo.
+        self.anchor = anchor
         QTimer.singleShot(250, lambda: self._grab(mode))
 
     def _grab(self, mode: str):
         screens = QGuiApplication.screens()
-        if mode == "ecran" and len(screens) == 1:  # un seul écran : pas besoin de choisir
-            pm = Shot(screens[0]).pixmap
-            pm.setDevicePixelRatio(1)
-            self.done.emit(pm)
+        if mode == "ecran":
+            shots = [Shot(sc) for sc in screens]
+            if len(shots) == 1:  # un seul écran : pas besoin de choisir
+                pm = shots[0].pixmap
+                pm.setDevicePixelRatio(1)
+                self.done.emit(pm)
+                return
+            self.picker = ScreenPicker(shots, self.anchor)
+            result = []
+            self.picker.picked.connect(result.append)
+            self.picker.exec()
+            self.picker = None
+            self.done.emit(result[0] if result else None)
             return
         windows = native_windows() if mode == "fenetre" else []
         if mode == "fenetre" and not windows:
@@ -224,7 +318,11 @@ class Capture(QObject):
             ov = Overlay(Shot(screen), mode, windows)
             ov.picked.connect(self._finish)
             ov.cancelled.connect(lambda: self._finish(None))
-            ov.show()
+            if hasattr(ov, "setScreen"):
+                ov.setScreen(screen)
+            ov.setGeometry(screen.geometry())
+            ov.showFullScreen()
+            ov.setGeometry(screen.geometry())  # certaines configurations multi-écrans ignorent le premier placement
             self.overlays.append(ov)
         under = QGuiApplication.screenAt(QCursor.pos())
         for ov in self.overlays:

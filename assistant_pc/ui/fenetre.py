@@ -525,11 +525,11 @@ class MainWindow(QWidget):
         if self.capturing:
             return
         self.capturing = True
-        self._was_visible = self.isVisible()
+        anchor = self.frameGeometry().center() if self.isVisible() else None
         self.hide()
         self._capture = Capture()
         self._capture.done.connect(self._captured)
-        self._capture.start(mode)
+        self._capture.start(mode, anchor)
 
     def _captured(self, pixmap):
         self.capturing = False
