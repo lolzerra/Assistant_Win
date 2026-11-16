@@ -243,6 +243,7 @@ class MainWindow(QWidget):
     open_settings = Signal()
     quit_requested = Signal()
     check_updates = Signal()
+    coach_requested = Signal()
 
     def __init__(self, config, api: Api, parent=None):
         super().__init__(parent)
@@ -286,6 +287,7 @@ class MainWindow(QWidget):
         more.setText("⋮")
         more.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(more)
+        menu.addAction("🎮 Coach en direct…", self.coach_requested.emit)
         menu.addAction("Paramètres…", self.open_settings.emit)
         menu.addAction("Vérifier les mises à jour…", self.check_updates.emit)
         menu.addSeparator()

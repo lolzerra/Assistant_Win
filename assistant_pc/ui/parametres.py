@@ -1,6 +1,7 @@
 """Paramètres : serveur, empreinte du certificat, test de connexion, fenêtre, consignes perso, déconnexion."""
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QKeySequenceEdit, QToolButton, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout)
 
 from ..api import Api, ApiError
@@ -12,6 +13,8 @@ from .connexion import http_warning_label
 class SettingsDialog(QDialog):
     logout_requested = Signal()
     check_updates = Signal()
+    coach_requested = Signal()
+    hotkey_changed = Signal()
 
     def __init__(self, config, token: str | None, parent=None):
         super().__init__(parent)
@@ -54,6 +57,12 @@ class SettingsDialog(QDialog):
         self.on_top.setChecked(config["always_on_top"])
         self.startup = QCheckBox("Lancer avec Windows (dans la zone de notification)")
         self.startup.setChecked(config["start_with_windows"])
+        self.hotkey = QKeySequenceEdit(QKeySequence(config["hotkey"]))
+        self.hotkey.setMaximumSequenceLength(1)
+        clear_key = QToolButton()
+        clear_key.setText("✕")
+        clear_key.setToolTip("Aucun raccourci")
+        clear_key.clicked.connect(self.hotkey.clear)
         self.mic = QComboBox()
         self.mic.addItem("Micro par défaut de Windows", "")
         try:
@@ -95,6 +104,15 @@ class SettingsDialog(QDialog):
         wl = QVBoxLayout(win)
         wl.addWidget(self.on_top)
         wl.addWidget(self.startup)
+        hk = QHBoxLayout()
+        hk.addWidget(QLabel("Raccourci global pour afficher ou masquer :"))
+        hk.addWidget(self.hotkey, 1)
+        hk.addWidget(clear_key)
+        wl.addLayout(hk)
+        coach = QPushButton("🎮 Coach en direct…")
+        coach.setToolTip("Analyse de vos parties : score, stats et conseils à chaque capture")
+        coach.clicked.connect(self._coach)
+        wl.addWidget(coach, alignment=Qt.AlignLeft)
 
         self.auto_update = QCheckBox("Chercher les mises à jour au démarrage (sur GitHub)")
         self.auto_update.setChecked(config["auto_update"])
@@ -213,12 +231,20 @@ class SettingsDialog(QDialog):
                 QMessageBox.information(self, "Lancement avec Windows", err)
             else:
                 self.config["start_with_windows"] = self.startup.isChecked()
+        new_key = self.hotkey.keySequence().toString()
+        if new_key != self.config["hotkey"]:
+            self.config["hotkey"] = new_key
+            self.hotkey_changed.emit()
         self.config.update(server_url=url, fingerprint=fp, always_on_top=self.on_top.isChecked(),
                            auto_update=self.auto_update.isChecked(),
                            microphone=self.mic.currentData() if self.mic.currentData() is not None else "",
                            instructions=self.instructions.toPlainText().strip()[:4000])
         self.config.save()
         self.accept()
+
+    def _coach(self):
+        self.reject()
+        self.coach_requested.emit()
 
     def _logout(self):
         if QMessageBox.question(self, "Déconnexion", "Se déconnecter et supprimer le jeton de ce PC ?") == QMessageBox.Yes:

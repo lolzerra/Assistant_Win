@@ -9,7 +9,7 @@ import os
 import sys
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QDialog, QLabel, QMenu, QVBoxLayout, QWidget
 
 
@@ -17,6 +17,11 @@ from PySide6.QtWidgets import QAbstractButton, QDialog, QLabel, QMenu, QVBoxLayo
 
 def native_windows() -> list[tuple[QRect, str]]:
     """Fenêtres visibles, de la plus haute à la plus basse : (rectangle natif, titre). Vide hors Windows."""
+    return [(r, t) for _h, t, r in list_windows()]
+
+
+def list_windows() -> list[tuple[int, str, QRect]]:
+    """Fenêtres visibles : (handle, titre, rectangle natif), de la plus haute à la plus basse."""
     if sys.platform != "win32":
         return []
     import ctypes
@@ -50,11 +55,117 @@ def native_windows() -> list[tuple[QRect, str]]:
         n = user32.GetWindowTextLengthW(hwnd)
         buf = ctypes.create_unicode_buffer(n + 1)
         user32.GetWindowTextW(hwnd, buf, n + 1)
-        found.append((rect, buf.value))
+        found.append((int(hwnd), buf.value, rect))
         return True
 
     user32.EnumWindows(visit, 0)
     return found
+
+
+# ---------- Capture à la demande (coach) ----------
+
+def window_rect(hwnd: int) -> QRect | None:
+    """Rectangle natif visible d'une fenêtre ; None si elle est fermée ou réduite."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return None
+    r = wintypes.RECT()
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
+        user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+    return QRect(r.left, r.top, r.right - r.left, r.bottom - r.top)
+
+
+def _print_window(hwnd: int) -> QImage:
+    """Contenu de la fenêtre, même recouverte par une autre (PrintWindow, rendu complet)."""
+    import ctypes
+    from ctypes import wintypes
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    H = ctypes.c_void_p
+    user32.GetDC.restype = H
+    user32.GetDC.argtypes = [H]
+    user32.ReleaseDC.argtypes = [H, H]
+    user32.PrintWindow.argtypes = [H, H, wintypes.UINT]
+    gdi32.CreateCompatibleDC.restype = H
+    gdi32.CreateCompatibleDC.argtypes = [H]
+    gdi32.CreateCompatibleBitmap.restype = H
+    gdi32.CreateCompatibleBitmap.argtypes = [H, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.restype = H
+    gdi32.SelectObject.argtypes = [H, H]
+    gdi32.DeleteObject.argtypes = [H]
+    gdi32.DeleteDC.argtypes = [H]
+    gdi32.GetDIBits.argtypes = [H, H, wintypes.UINT, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    wr = wintypes.RECT()
+    user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(wr))
+    w, h = wr.right - wr.left, wr.bottom - wr.top
+    if w <= 0 or h <= 0:
+        return QImage()
+    screen_dc = user32.GetDC(None)
+    mem = gdi32.CreateCompatibleDC(screen_dc)
+    bmp = gdi32.CreateCompatibleBitmap(screen_dc, w, h)
+    old = gdi32.SelectObject(mem, bmp)
+    try:
+        if not user32.PrintWindow(H(hwnd), mem, 2):  # PW_RENDERFULLCONTENT
+            return QImage()
+        bmi = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=w, biHeight=-h, biPlanes=1,
+                               biBitCount=32, biCompression=0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bmi), 0)
+        img = QImage(buf.raw, w, h, w * 4, QImage.Format_RGB32).copy()
+    finally:
+        gdi32.SelectObject(mem, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mem)
+        user32.ReleaseDC(None, screen_dc)
+    visible = window_rect(hwnd)  # sans les bordures invisibles de Windows 10/11
+    if visible is not None:
+        img = img.copy(visible.translated(-wr.left, -wr.top).intersected(QRect(0, 0, w, h)))
+    return img
+
+
+def _looks_black(img: QImage) -> bool:
+    step_x, step_y = max(1, img.width() // 12), max(1, img.height() // 12)
+    for y in range(step_y // 2, img.height(), step_y):
+        for x in range(step_x // 2, img.width(), step_x):
+            if img.pixel(x, y) & 0xFFFFFF:
+                return False
+    return True
+
+
+def grab_screen(screen) -> QImage:
+    pm = screen.grabWindow(0)
+    pm.setDevicePixelRatio(1)
+    return pm.toImage()
+
+
+def grab_window(hwnd: int) -> QImage:
+    """Capture d'une fenêtre : son contenu (même recouverte), sinon la zone de l'écran qu'elle occupe."""
+    rect = window_rect(hwnd)
+    if rect is None:
+        return QImage()
+    try:
+        img = _print_window(hwnd)
+        if not img.isNull() and not _looks_black(img):
+            return img
+    except Exception:
+        pass
+    centre = rect.center()
+    for screen in QGuiApplication.screens():
+        shot = Shot(screen)
+        if shot.native_rect().contains(centre):
+            return shot.crop_native(rect).toImage()
+    return QImage()
 
 
 # ---------- Calque de sélection ----------

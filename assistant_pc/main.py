@@ -13,6 +13,7 @@ from .config import APP_NAME, VERSION, Config
 from .ui import icone, travail
 from .ui.connexion import LoginDialog
 from .ui.fenetre import MainWindow
+from .raccourci import Hotkeys
 from .ui.miseajour import Updater
 from .ui.parametres import SettingsDialog
 
@@ -40,6 +41,8 @@ class App:
         self.server = server
         self.config = Config()
         self.window: MainWindow | None = None
+        self.coach_window = None
+        self.hotkeys = Hotkeys(qapp)
         maj.cleanup()
 
         self.tray = QSystemTrayIcon(icone.icon())
@@ -47,6 +50,7 @@ class App:
         menu = QMenu()
         menu.addAction("Afficher", self.show)
         menu.addAction("Nouvelle conversation", self.new_conversation)
+        menu.addAction("🎮 Coach en direct…", self.coach)
         menu.addAction("Paramètres…", self.settings)
         menu.addAction("Vérifier les mises à jour", lambda: self.updater.check(manual=True))
         menu.addSeparator()
@@ -66,6 +70,7 @@ class App:
             raise SystemExit(0)
         self.open_window(Api(self.config["server_url"], self.config["fingerprint"], coffre.load_token()),
                          show=not start_hidden)
+        self._register_show_hotkey(quiet=True)
         if updated:
             self.tray.showMessage("Assistant PC", f"Mis à jour en version {VERSION}.", icone.icon(), 4000)
         if self.config["auto_update"]:
@@ -95,6 +100,7 @@ class App:
         self.window.open_settings.connect(self.settings)
         self.window.quit_requested.connect(self.quit)
         self.window.check_updates.connect(lambda: self.updater.check(manual=True))
+        self.window.coach_requested.connect(self.coach)
         if show:
             self.window.bring_to_front()
 
@@ -137,6 +143,8 @@ class App:
         dlg = SettingsDialog(self.config, self.window.api.token, self.window)
         dlg.logout_requested.connect(self.logout)
         dlg.check_updates.connect(lambda: self.updater.check(manual=True))
+        dlg.coach_requested.connect(lambda: QTimer.singleShot(0, self.coach))
+        dlg.hotkey_changed.connect(self._register_show_hotkey)
         old = (self.config["server_url"], self.config["fingerprint"])
         if dlg.exec() == SettingsDialog.Accepted:
             if (self.config["server_url"], self.config["fingerprint"]) != old:
@@ -148,6 +156,29 @@ class App:
                 self.window.api.close()
                 self.window.set_api(api)
             self.window.apply_on_top()
+
+    def _register_show_hotkey(self, quiet=False):
+        err = self.hotkeys.register("show", self.config["hotkey"], self.window.toggle)
+        if err:
+            self.tray.showMessage("Assistant PC", f"Raccourci d'affichage : {err}", icone.icon(), 5000)
+
+    def coach(self):
+        from .ui.coach import CoachSetup, CoachWindow
+        if self.coach_window is not None:
+            self.coach_window.show()
+            self.coach_window.raise_()
+            self.coach_window.activateWindow()
+            return
+        w = self.window
+        setup = CoachSetup(self.config, w.models, w.model_box.currentData(), w if w.isVisible() else None)
+        setup.setWindowIcon(icone.icon())
+        if setup.exec() != CoachSetup.Accepted:
+            return
+        self.coach_window = CoachWindow(self.config, w.api, setup.result_settings(), self.hotkeys, w.models)
+        self.coach_window.setWindowIcon(icone.icon())
+        self.coach_window.setAttribute(Qt.WA_DeleteOnClose)
+        self.coach_window.closed.connect(lambda: setattr(self, "coach_window", None))
+        self.coach_window.show()
 
     def _tray_clicked(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):

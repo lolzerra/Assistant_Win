@@ -13,6 +13,7 @@ Petite appli Windows qui envoie fichiers et consignes au serveur Chat IA maison 
 ## Utiliser
 
 - Icône près de l'horloge : clic pour afficher ou masquer, clic droit pour le menu. Fermer la fenêtre la masque seulement.
+- **Ctrl+Alt+Espace** (modifiable dans les paramètres) : afficher ou masquer l'appli depuis n'importe où.
 - Glisser des fichiers dans la fenêtre (ou **+** → Pièce jointe, ou les coller depuis l'Explorateur) : PDF, Word, Excel, images, texte.
   25 Mo et 10 fichiers au maximum par message. Ils partent au serveur dès le dépôt.
 - **+** → **Capture d'écran** : rectangle libre (glisser), fenêtre (cliquer dessus) ou écran entier (miniatures des écrans : cliquer sur celui à capturer, clic droit pour une nouvelle capture de son état actuel).
@@ -25,6 +26,17 @@ Petite appli Windows qui envoie fichiers et consignes au serveur Chat IA maison 
 - Blocs de code : bouton « Copier le code » en haut à droite ; au-delà de 10 lignes, seules les 5 premières
   sont affichées, avec « Afficher tout ».
 - **➕** (Ctrl+N) : nouvelle conversation.
+
+## Coach en direct
+
+Paramètres → **Coach en direct…** (ou menu ⋮). On choisit l'écran ou la fenêtre du jeu (aperçu toutes les
+0,5 s), son pseudo, le jeu (facultatif), un modèle qui voit les images et le raccourci de capture (**F8** par
+défaut). Une fenêtre de coaching s'ouvre : à chaque appui sur le raccourci, même en jeu, une capture part au
+modèle, qui répond avec le score, les stats du joueur et des conseils pour la suite. Une capture prise pendant
+une réponse attend la fin de celle-ci.
+
+En mode Fenêtre, le contenu est capturé même si une autre fenêtre le recouvre. Les jeux en plein écran
+exclusif peuvent donner une image noire : préférez le mode « fenêtré sans bordure ».
 
 ## Serveur et sécurité
 
