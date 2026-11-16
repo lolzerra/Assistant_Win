@@ -20,6 +20,8 @@ Petite appli Windows qui envoie fichiers et consignes au serveur Chat IA maison 
   Cliquez de nouveau pour arrêter. Windows doit autoriser les applications de bureau à utiliser le micro.
 - **🔎 Recherches** dans une réponse : déplie les recherches web faites et leurs résultats.
 - **📋 Copier** sous une réponse : mise en forme conservée dans Word et Outlook, Markdown dans un éditeur de texte.
+- Blocs de code : bouton « Copier le code » en haut à droite ; au-delà de 10 lignes, seules les 5 premières
+  sont affichées, avec « Afficher tout ».
 - **➕** (Ctrl+N) : nouvelle conversation.
 
 ## Serveur et sécurité

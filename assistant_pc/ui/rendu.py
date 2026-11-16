@@ -1,5 +1,6 @@
 """Markdown → HTML pour QTextBrowser (tableaux, listes, code). Le HTML brut du modèle est affiché comme du texte."""
 import html as htmlmod
+import re
 
 import markdown
 from PySide6.QtCore import QUrl
@@ -42,3 +43,37 @@ def style_sheet() -> str:
 def blocked_resource(_url: QUrl):
     """Aucune ressource externe ou locale n'est chargée dans les réponses."""
     return None
+
+
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$")
+
+
+def split_code(text: str) -> list[tuple]:
+    """Découpe le Markdown en morceaux : ("text", markdown) et ("code", code, langage, fermé).
+    Un bloc encore ouvert (réponse en cours) est rendu comme un bloc de code."""
+    parts: list[tuple] = []
+    buf: list[str] = []
+    code: list[str] | None = None
+    fence, lang = "", ""
+    for line in text.split("\n"):
+        if code is None:
+            m = _FENCE.match(line)
+            if m:
+                if buf:
+                    parts.append(("text", "\n".join(buf)))
+                    buf = []
+                fence, lang, code = m.group(1), m.group(2), []
+            else:
+                buf.append(line)
+        else:
+            stripped = line.strip()
+            if stripped.startswith(fence[0] * len(fence)) and set(stripped) == {fence[0]}:
+                parts.append(("code", "\n".join(code), lang, True))
+                code = None
+            else:
+                code.append(line)
+    if code is not None:
+        parts.append(("code", "\n".join(code), lang, False))
+    elif buf:
+        parts.append(("text", "\n".join(buf)))
+    return [p for p in parts if p[0] == "code" or p[1].strip()]
