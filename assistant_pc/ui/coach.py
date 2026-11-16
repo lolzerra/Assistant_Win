@@ -1,5 +1,6 @@
 """Coach en direct : à chaque appui sur le raccourci, une capture du jeu part au modèle, qui donne le score,
 les stats du joueur (repéré par son pseudo) et des conseils pour la suite de la partie."""
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDia
                                QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
 from ..api import MAX_FILE_BYTES, Api, AuthError
-from ..raccourci import ElevatedRelay, is_admin
+from ..raccourci import MOUSE_BUTTONS, ElevatedRelay, is_admin, trigger_native
 from . import travail
 from .capture import grab_screen, grab_window, list_windows
 from .fenetre import StreamWorker
@@ -86,8 +87,18 @@ class CoachSetup(QDialog):
         self.model_note = QLabel("" if vision or not models else "⚠ Aucun modèle ne voit les images : le coach ne pourra pas lire les captures.")
         self.model_note.setStyleSheet("color: #c0392b;")
         self.model_note.setVisible(bool(self.model_note.text()))
-        self.key = QKeySequenceEdit(QKeySequence(config["coach_hotkey"]))
+        mouse = config["coach_hotkey"] in MOUSE_BUTTONS
+        self.trigger_kind = QComboBox()
+        self.trigger_kind.addItem("Touche du clavier", "key")
+        self.trigger_kind.addItem("Bouton latéral arrière de la souris (souris 4)", "Souris 4")
+        self.trigger_kind.addItem("Bouton latéral avant de la souris (souris 5)", "Souris 5")
+        if mouse:
+            self.trigger_kind.setCurrentIndex(self.trigger_kind.findData(config["coach_hotkey"]))
+        self.key = QKeySequenceEdit(QKeySequence("F8" if mouse else config["coach_hotkey"]))
         self.key.setMaximumSequenceLength(1)
+        self.trigger_kind.currentIndexChanged.connect(
+            lambda: self.key.setEnabled(self.trigger_kind.currentData() == "key"))
+        self.key.setEnabled(not mouse)
         self.admin = QCheckBox("Le jeu tourne en administrateur (League of Legends, Valorant…) :\n"
                                "capter le raccourci avec les droits administrateur (confirmation Windows)")
         self.admin.setChecked(bool(config["coach_admin"]))
@@ -113,7 +124,8 @@ class CoachSetup(QDialog):
         form.addRow("Jeu", self.game)
         form.addRow("Modèle", self.model)
         form.addRow("", self.model_note)
-        form.addRow("Raccourci de capture", self.key)
+        form.addRow("Déclencheur", self.trigger_kind)
+        form.addRow("Touche", self.key)
         form.addRow("", self.admin)
 
         buttons = QDialogButtonBox()
@@ -182,7 +194,8 @@ class CoachSetup(QDialog):
         if not self.target.currentData():
             self.error.setText("Choisissez l'écran ou la fenêtre à capturer.")
             return
-        seq = self.key.keySequence().toString()
+        seq = (self.key.keySequence().toString() if self.trigger_kind.currentData() == "key"
+               else self.trigger_kind.currentData())
         if not seq:
             self.error.setText("Choisissez un raccourci de capture.")
             return
@@ -258,9 +271,17 @@ class CoachWindow(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         now = QPushButton("📸 Analyser maintenant")
-        now.clicked.connect(self.trigger)
+        now.clicked.connect(lambda: self.trigger("bouton"))
         self.on_top = QCheckBox("Toujours au premier plan")
         self.on_top.toggled.connect(self._set_on_top)
+        self.auto = QComboBox()
+        for label, sec in (("Analyse auto : non", 0), ("Auto : 30 s", 30), ("Auto : 1 min", 60),
+                           ("Auto : 2 min", 120), ("Auto : 5 min", 300)):
+            self.auto.addItem(label, sec)
+        self.auto.setToolTip("Analyse automatique à intervalle régulier, sans toucher au clavier")
+        self.auto.currentIndexChanged.connect(self._auto_changed)
+        self.auto_timer = QTimer(self)
+        self.auto_timer.timeout.connect(lambda: self.trigger("analyse auto"))
         self.admin_btn = QPushButton("🛡 Mode administrateur")
         self.admin_btn.setToolTip("Si le raccourci ne marche pas en jeu (jeu lancé en administrateur, comme LoL) : "
                                   "le raccourci sera capté avec les droits administrateur")
@@ -273,6 +294,7 @@ class CoachWindow(QWidget):
         head = QHBoxLayout()
         head.addWidget(now)
         head.addWidget(self.on_top)
+        head.addWidget(self.auto)
         head.addStretch()
         head.addWidget(self.admin_btn)
         head.addWidget(stop)
@@ -295,24 +317,76 @@ class CoachWindow(QWidget):
         lay.addLayout(head)
         lay.addWidget(source)
         lay.addWidget(self.status)
+        self.diag = QLabel()
+        self.diag.setStyleSheet("color: gray; font-size: 11px;")
+        self.diag.setWordWrap(True)
+        lay.addWidget(self.diag)
         lay.addWidget(self.scroll, 1)
         self.setStyleSheet(bubble_style(self))
 
+        self.local = None  # détection dans l'appli (crochet + scrutation), en plus du raccourci Windows
+        self.poll_timer = QTimer(self)
+        self.poll_timer.timeout.connect(lambda: self.local and self.local.poll())
         if settings.get("admin") and not is_admin():
             self._start_relay()
         else:
-            err = hotkeys.register("coach", settings["hotkey"], self.trigger)
-            if err:
-                self._status(f"⚠ {err}. Utilisez le bouton « Analyser maintenant » ou changez de raccourci.", True)
-            else:
-                self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie. "
-                             "Rien ne se passe en jeu ? Cliquez sur « 🛡 Mode administrateur ».")
+            self._start_local()
 
     def _key(self) -> str:
+        if self.s["hotkey"] in MOUSE_BUTTONS:
+            return {"Souris 4": "le bouton latéral arrière de la souris",
+                    "Souris 5": "le bouton latéral avant de la souris"}[self.s["hotkey"]]
         return QKeySequence(self.s["hotkey"]).toString(QKeySequence.NativeText)
 
+    def _start_local(self):
+        mouse = self.s["hotkey"] in MOUSE_BUTTONS
+        err = None if mouse else self.hotkeys.register("coach", self.s["hotkey"], lambda: self._seen("raccourci"))
+        methods = [] if mouse or err else ["raccourci"]
+        native = trigger_native(self.s["hotkey"])
+        if sys.platform == "win32" and native:
+            try:
+                from ..touches import Watcher
+                # Le crochet doit rendre la main tout de suite : la capture est faite juste après.
+                self.local = Watcher(native[0], native[1],
+                                     lambda src: QTimer.singleShot(0, lambda: self.trigger(src)))
+                if self.local.hook_ok:
+                    methods.append("crochet")
+                methods.append("scrutation")
+                self.poll_timer.start(30)
+            except Exception as e:
+                self.local = None
+                err = err or f"détection impossible : {e}"
+        self.diag.setText("Détection : " + (" · ".join(methods) or "aucune") +
+                          (" · administrateur : oui" if is_admin() else " · administrateur : non"))
+        if err and not methods:
+            self._status(f"⚠ {err}. Utilisez « Analyser maintenant », l'analyse auto, ou le mode administrateur.", True)
+        else:
+            self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie. "
+                         "Rien ne se passe en jeu ? Cliquez sur « 🛡 Mode administrateur ».")
+
+    def _seen(self, source: str):
+        """Raccourci Windows : passe par le même filtre anti-doublon que le crochet et la scrutation."""
+        if self.local is not None:
+            self.local.fire(source)
+        else:
+            self.trigger(source)
+
+    def _stop_local(self):
+        self.hotkeys.unregister("coach")
+        self.poll_timer.stop()
+        if self.local is not None:
+            self.local.close()
+            self.local = None
+
+    def _auto_changed(self):
+        sec = self.auto.currentData()
+        if sec:
+            self.auto_timer.start(sec * 1000)
+        else:
+            self.auto_timer.stop()
+
     def _start_relay(self):
-        self.hotkeys.unregister("coach")  # le relais prend la touche à sa place
+        self._stop_local()  # le relais prend la touche à sa place
         if self.relay is None:
             self.relay = ElevatedRelay()
             self.relay.pressed.connect(self.trigger)
@@ -326,15 +400,19 @@ class CoachWindow(QWidget):
             return
         if active:
             self.admin_btn.setText("🛡 Administrateur actif")
-            self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie (raccourci capté en administrateur).")
+            info = dict(kv.split("=", 1) for kv in msg.split() if "=" in kv)
+            yes = lambda k: "✓" if info.get(k) == "1" else "✗"
+            self.diag.setText(f"Relais : administrateur {yes('admin')} · raccourci {yes('raccourci')} · "
+                              f"crochet {yes('crochet')} · scrutation ✓ · journal : %TEMP%\\AssistantPC-relais.log")
+            self._status(f"Appuyez sur {self._key()} en jeu pour analyser la partie (captée en administrateur).")
             return
         if msg.startswith("Démarrage"):
             self._status(msg)
             return
         self.admin_btn.setEnabled(True)
         self.admin_btn.setText("🛡 Mode administrateur")
+        self._start_local()  # repli : détection normale
         self._status(f"⚠ {msg}", True)
-        self.hotkeys.register("coach", self.s["hotkey"], self.trigger)  # repli : raccourci normal
 
     def _status(self, text: str, error=False):
         self.status.setStyleSheet("color: #c0392b;" if error else "color: gray;")
@@ -346,7 +424,8 @@ class CoachWindow(QWidget):
 
     # ---------- Captures ----------
 
-    def trigger(self):
+    def trigger(self, source: str = "bouton"):
+        self.last_source = source
         img = grab_target(self.s["target"])
         if img is None or img.isNull():
             self._status("⚠ Capture impossible : la fenêtre du jeu est-elle fermée ou réduite ?", True)
@@ -383,7 +462,7 @@ class CoachWindow(QWidget):
         self.answer = AnswerBubble()
         self._append(self.answer)
         self._done = None
-        self._status("Analyse en cours…")
+        self._status(f"Analyse en cours… (déclenchée par : {self.last_source})")
         self.worker = CoachStream(self.api, self.cid, self.s["model"], payload, png, name)
         self.worker.conversation.connect(lambda cid: setattr(self, "cid", cid))
         self.worker.event.connect(self._on_event)
@@ -427,7 +506,8 @@ class CoachWindow(QWidget):
 
     def closeEvent(self, e):
         self.closing = True
-        self.hotkeys.unregister("coach")
+        self.auto_timer.stop()
+        self._stop_local()
         if self.relay is not None:
             self.relay.stop()
         if self.worker:

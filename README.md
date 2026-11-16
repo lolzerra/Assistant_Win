@@ -41,6 +41,11 @@ cliquez sur « 🛡 Mode administrateur » dans la fenêtre du coach : après co
 en administrateur capte le raccourci et prévient l'appli, qui elle reste normale (le glisser-déposer continue
 de marcher). Le relais s'arrête avec le coaching.
 
+Déclencheurs : une touche, ou un bouton latéral de la souris ; la touche est détectée par trois méthodes
+(raccourci Windows, crochet clavier, scrutation). La ligne « Détection » de la fenêtre du coach indique
+lesquelles sont actives, et chaque analyse dit par quoi elle a été déclenchée. L'analyse automatique
+(30 s à 5 min) marche sans aucune touche. Journal du relais : `%TEMP%\AssistantPC-relais.log`.
+
 En mode Fenêtre, le contenu est capturé même si une autre fenêtre le recouvre. Les jeux en plein écran
 exclusif peuvent donner une image noire : préférez le mode « fenêtré sans bordure ».
 

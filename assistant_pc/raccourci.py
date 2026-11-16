@@ -55,6 +55,16 @@ def to_native(seq: str) -> tuple[int, int] | None:
     return m, vk
 
 
+MOUSE_BUTTONS = {"Souris 4": 0x05, "Souris 5": 0x06}  # boutons latéraux arrière / avant
+
+
+def trigger_native(seq: str) -> tuple[int, int] | None:
+    """Comme to_native, avec en plus les boutons latéraux de la souris (« Souris 4 », « Souris 5 »)."""
+    if seq in MOUSE_BUTTONS:
+        return 0, MOUSE_BUTTONS[seq]
+    return to_native(seq)
+
+
 class Hotkeys(QAbstractNativeEventFilter):
     def __init__(self, app):
         super().__init__()
@@ -120,7 +130,7 @@ def is_admin() -> bool:
 
 class ElevatedRelay(QObject):
     """Lance AssistantPC en administrateur avec --relais-raccourci et reçoit les appuis par un tube nommé."""
-    pressed = Signal()
+    pressed = Signal(str)      # méthode qui a vu l'appui
     state = Signal(bool, str)  # actif ?, message
 
     def __init__(self):
@@ -133,7 +143,7 @@ class ElevatedRelay(QObject):
         if sys.platform != "win32":
             self.state.emit(False, "Disponible seulement sous Windows")
             return
-        native = to_native(seq)
+        native = trigger_native(seq)
         if native is None:
             self.state.emit(False, f"Touche non prise en charge : {seq}")
             return
@@ -172,10 +182,10 @@ class ElevatedRelay(QObject):
     def _read(self):
         while self.conn and self.conn.canReadLine():
             line = bytes(self.conn.readLine()).decode("utf-8", "replace").strip()
-            if line == "HOTKEY":
-                self.pressed.emit()
-            elif line == "OK":
-                self.state.emit(True, "")
+            if line.startswith("HOTKEY"):
+                self.pressed.emit(line[7:] or "relais")
+            elif line.startswith("OK"):
+                self.state.emit(True, line[3:])
             elif line.startswith("ERR"):
                 self.state.emit(False, line[4:])
 
