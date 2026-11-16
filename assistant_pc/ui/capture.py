@@ -10,7 +10,7 @@ import sys
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QAbstractButton, QDialog, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractButton, QDialog, QLabel, QMenu, QVBoxLayout, QWidget
 
 
 # ---------- Fenêtres de Windows ----------
@@ -199,7 +199,8 @@ class Overlay(QWidget):
 
 
 class ScreenThumb(QAbstractButton):
-    """Miniature d'un écran, numérotée, surlignée au survol."""
+    """Miniature d'un écran, numérotée, surlignée au survol. Clic droit : capture dans l'état actuel."""
+    live = Signal(object)
 
     def __init__(self, shot: Shot, number: int, primary: bool, parent=None):
         super().__init__(parent)
@@ -214,6 +215,11 @@ class ScreenThumb(QAbstractButton):
 
     def leaveEvent(self, e):
         self.update()
+
+    def contextMenuEvent(self, e):
+        menu = QMenu(self)
+        menu.addAction("Capturer dans l'état actuel", lambda: self.live.emit(self.shot.screen))
+        menu.exec(e.globalPos())
 
     def paintEvent(self, _e):
         p = QPainter(self)
@@ -261,7 +267,9 @@ class ScreenPicker(QDialog):
             t.setGeometry(round((r.x() - box.x()) * scale), round((r.y() - box.y()) * scale),
                           round(r.width() * scale), round(r.height() * scale))
             t.clicked.connect(lambda _=False, sh=sh: self._pick(sh))
-        hint = QLabel("Cliquez sur l'écran à capturer · Échap pour annuler")
+            t.live.connect(self._live)
+        self.live_screen = None
+        hint = QLabel("Cliquez sur l'écran à capturer · clic droit : capture de l'état actuel · Échap pour annuler")
         hint.setStyleSheet("color: gray;")
         lay = QVBoxLayout(self)
         lay.addWidget(canvas, alignment=Qt.AlignCenter)
@@ -274,6 +282,10 @@ class ScreenPicker(QDialog):
             g.moveLeft(max(area.left(), min(g.left(), area.right() - g.width())))
             g.moveTop(max(area.top(), min(g.top(), area.bottom() - g.height())))
             self.move(g.topLeft())
+
+    def _live(self, screen):
+        self.live_screen = screen
+        self.accept()
 
     def _pick(self, shot: Shot):
         pm = shot.pixmap.copy()
@@ -308,7 +320,11 @@ class Capture(QObject):
             result = []
             self.picker.picked.connect(result.append)
             self.picker.exec()
+            live = self.picker.live_screen
             self.picker = None
+            if live is not None:  # nouvelle photo, une fois la fenêtre de choix effacée
+                QTimer.singleShot(250, lambda: self._grab_now(live))
+                return
             self.done.emit(result[0] if result else None)
             return
         windows = native_windows() if mode == "fenetre" else []
@@ -330,6 +346,14 @@ class Capture(QObject):
                 ov.activateWindow()
                 ov.raise_()
                 ov.setFocus()
+
+    def _grab_now(self, screen):
+        if screen not in QGuiApplication.screens():
+            self.done.emit(None)
+            return
+        pm = Shot(screen).pixmap
+        pm.setDevicePixelRatio(1)
+        self.done.emit(pm)
 
     def _finish(self, pixmap):
         for ov in self.overlays:
