@@ -1,0 +1,3 @@
+PySide6-Essentials>=6.7,<6.11
+httpx>=0.27,<0.29
+Markdown>=3.6,<4
