@@ -1,8 +1,9 @@
 """Fenêtre principale : barre du haut, conversation, pièces jointes et zone de consigne."""
 import threading
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QPalette
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
                                QPlainTextEdit, QScrollArea, QToolButton, QVBoxLayout,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxL
 from ..dictee import Dictation, join_text
 from ..api import MAX_ATTACHMENTS, MAX_FILE_BYTES, Api, AuthError
 from . import travail
+from .capture import Capture
 from .onde import Waveform
 from .messages import AnswerBubble, UserBubble, bubble_style
 
@@ -25,9 +27,11 @@ class Chip(QFrame):
     changed = Signal()
     removed = Signal(object)
 
-    def __init__(self, path: Path, api: Api, parent=None):
+    def __init__(self, api: Api, path: Path | None = None, data: bytes | None = None, name: str = "", parent=None):
         super().__init__(parent)
         self.path = path
+        self.name = path.name if path else name
+        self.where = str(path) if path else name
         self.info: dict | None = None
         self.error: str | None = None
         self.cancelled = False
@@ -44,7 +48,8 @@ class Chip(QFrame):
         x.clicked.connect(self._remove)
         lay.addWidget(x)
         self._show("⏳")
-        travail.run(lambda: api.upload(path), self._uploaded, self._failed)
+        job = (lambda: api.upload(path)) if path else (lambda: api.upload_bytes(data, name))
+        travail.run(job, self._uploaded, self._failed)
 
     @property
     def ready(self) -> bool:
@@ -55,9 +60,9 @@ class Chip(QFrame):
         return self.info is None and self.error is None
 
     def _show(self, state: str, tip: str = ""):
-        name = self.path.name if len(self.path.name) <= 28 else self.path.name[:25] + "…"
+        name = self.name if len(self.name) <= 28 else self.name[:25] + "…"
         self.label.setText(f"{state} {name}")
-        self.setToolTip(tip or str(self.path))
+        self.setToolTip(tip or self.where)
 
     def _uploaded(self, info: dict):
         if self.cancelled:
@@ -65,7 +70,7 @@ class Chip(QFrame):
         self.info = info
         icon = "🖼" if info.get("kind") == "image" else "📄"
         tokens = info.get("tokens")
-        self._show(icon, f"{self.path}\n{tokens} tokens" if tokens else str(self.path))
+        self._show(icon, f"{self.where}\n{tokens} tokens" if tokens else self.where)
         self.changed.emit()
 
     def _failed(self, e):
@@ -149,8 +154,10 @@ class PromptEdit(QPlainTextEdit):
             return
         super().keyPressEvent(e)
 
+    image_pasted = Signal(object)
+
     def canInsertFromMimeData(self, source):
-        return source.hasUrls() or super().canInsertFromMimeData(source)
+        return source.hasUrls() or source.hasImage() or super().canInsertFromMimeData(source)
 
     def insertFromMimeData(self, source):
         if source.hasUrls():
@@ -158,6 +165,9 @@ class PromptEdit(QPlainTextEdit):
             if paths:
                 self.files_pasted.emit(paths)
                 return
+        if source.hasImage():
+            self.image_pasted.emit(source.imageData())
+            return
         super().insertFromMimeData(source)
 
 
@@ -284,10 +294,19 @@ class MainWindow(QWidget):
         # Bas
         self.chip_row = FlowRow()
         self.chip_row.hide()
+        self.capturing = False
         attach = QToolButton()
-        self._icon_button(attach, "trombone")
-        attach.setToolTip("Joindre des fichiers")
-        attach.clicked.connect(self._pick_files)
+        self._icon_button(attach, "plus")
+        attach.setToolTip("Joindre un fichier ou une capture d'écran")
+        attach.setPopupMode(QToolButton.InstantPopup)
+        attach.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+        add_menu = QMenu(attach)
+        add_menu.addAction(self._glyph("trombone"), "Pièce jointe…", self._pick_files)
+        shots = add_menu.addMenu(self._glyph("capture"), "Capture d'écran")
+        shots.addAction("Rectangle libre", lambda: self.capture("rectangle"))
+        shots.addAction("Fenêtre", lambda: self.capture("fenetre"))
+        shots.addAction("Écran entier", lambda: self.capture("ecran"))
+        attach.setMenu(add_menu)
         self.mic = QToolButton()
         self._icon_button(self.mic, "micro")
         self.mic.setCheckable(True)
@@ -312,6 +331,7 @@ class MainWindow(QWidget):
         self.prompt.setFixedHeight(76)
         self.prompt.submitted.connect(self.send)
         self.prompt.files_pasted.connect(self.add_files)
+        self.prompt.image_pasted.connect(lambda img: self.add_image(img, "image"))
         self.send_btn = QToolButton()
         self._icon_button(self.send_btn, "envoyer", accent=True)
         self.send_btn.setToolTip("Envoyer (Entrée)")
@@ -438,13 +458,53 @@ class MainWindow(QWidget):
             if size > MAX_FILE_BYTES:
                 problems.append(f"{p.name} : trop lourd (25 Mo maximum).")
                 continue
-            chip = Chip(p, self.api)
-            chip.changed.connect(self._chips_changed)
-            chip.removed.connect(self._remove_chip)
-            self.chips.append(chip)
+            self._add_chip(Chip(self.api, path=p))
         self.show_status("\n".join(problems))
         self._chips_changed()
         self.prompt.setFocus()
+
+    def _add_chip(self, chip: Chip):
+        chip.changed.connect(self._chips_changed)
+        chip.removed.connect(self._remove_chip)
+        self.chips.append(chip)
+
+    def add_image(self, image, prefix: str = "capture"):
+        """Image en mémoire (capture, presse-papiers) → pièce jointe PNG."""
+        if image is None or image.isNull():
+            return
+        if len(self.chips) >= MAX_ATTACHMENTS:
+            self.show_status(f"{MAX_ATTACHMENTS} pièces jointes au maximum par message.")
+            return
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        image.save(buf, "PNG")
+        data = bytes(buf.data())
+        if len(data) > MAX_FILE_BYTES:
+            self.show_status("Image trop lourde (25 Mo maximum).")
+            return
+        name = f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}.png"
+        self._add_chip(Chip(self.api, data=data, name=name))
+        self._chips_changed()
+        self.prompt.setFocus()
+
+    # ---------- Capture d'écran ----------
+
+    def capture(self, mode: str):
+        if self.capturing:
+            return
+        self.capturing = True
+        self._was_visible = self.isVisible()
+        self.hide()
+        self._capture = Capture()
+        self._capture.done.connect(self._captured)
+        self._capture.start(mode)
+
+    def _captured(self, pixmap):
+        self.capturing = False
+        self._capture = None
+        self.bring_to_front()
+        if pixmap is not None:
+            self.add_image(pixmap)
 
     def _remove_chip(self, chip: Chip):
         if chip in self.chips:
@@ -590,7 +650,7 @@ class MainWindow(QWidget):
         failed = [c for c in self.chips if c.error]
         if failed:
             self.show_status("Retirez d'abord les fichiers en erreur (⚠) :\n" +
-                             "\n".join(f"{c.path.name} : {c.error}" for c in failed))
+                             "\n".join(f"{c.name} : {c.error}" for c in failed))
             return
         if self.dictation.active or self.dictation.working:
             self.dictation.stop(flush=False)
